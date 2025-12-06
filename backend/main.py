@@ -24,12 +24,16 @@ import os
 origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,https://expenses.akash-deep.com")
 origins = [origin.strip() for origin in origins_str.split(",")]
 
+# For debugging - if origins contains "*", allow all origins
+allow_all = "*" in origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
+    allow_origins=["*"] if allow_all else origins,
+    allow_credentials=not allow_all,  # credentials can't be used with "*"
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -50,7 +54,9 @@ async def upload_statement(
 ):
     """Upload and parse a statement file"""
     try:
+        print(f"DEBUG: Received upload request - filename: {file.filename}, account_type: {account_type}")
         content = await file.read()
+        print(f"DEBUG: File content length: {len(content)} bytes")
         transactions_data = parser.parse_file(content, file.filename, account_type)
         
         if not transactions_data:
