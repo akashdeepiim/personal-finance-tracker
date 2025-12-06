@@ -14,7 +14,8 @@ export const uploadStatement = async (file: File, accountType: string) => {
   formData.append('file', file)
   formData.append('account_type', accountType)
 
-  const response = await api.post('/api/upload-statement', formData)
+  // Use axios directly instead of 'api' instance to avoid default Content-Type header conflict
+  const response = await axios.post(`${API_BASE}/api/upload-statement`, formData)
   return response.data
 }
 
