@@ -2,11 +2,20 @@ from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
-# SQLite database file
-DATABASE_URL = "sqlite:///./finance_tracker.db"
+# Database Selection
+import os
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    # Fallback to SQLite
+    DATABASE_URL = "sqlite:///./finance_tracker.db"
+    connect_args = {"check_same_thread": False}
+else:
+    # PostgreSQL (or other)
+    connect_args = {}
 
 engine = create_engine(
-    DATABASE_URL, connect_args={"check_same_thread": False}
+    DATABASE_URL, connect_args=connect_args
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

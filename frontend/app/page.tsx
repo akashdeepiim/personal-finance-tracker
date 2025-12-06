@@ -11,7 +11,7 @@ import TransactionTimeline from '@/components/TransactionTimeline'
 import CurrencySelector from '@/components/CurrencySelector'
 import { Wallet, Upload, PieChart, TrendingUp, Brain, Clock } from 'lucide-react'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState('dashboard')

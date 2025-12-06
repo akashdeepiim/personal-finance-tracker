@@ -18,14 +18,20 @@ Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Personal Finance Tracker API")
 
+
 # CORS middleware
+import os
+origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+origins = [origin.strip() for origin in origins_str.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 parser = StatementParser()
 analyzer = FinancialAnalyzer()
