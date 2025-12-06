@@ -54,9 +54,7 @@ async def upload_statement(
 ):
     """Upload and parse a statement file"""
     try:
-        print(f"DEBUG: Received upload request - filename: {file.filename}, account_type: {account_type}")
         content = await file.read()
-        print(f"DEBUG: File content length: {len(content)} bytes")
         transactions_data = parser.parse_file(content, file.filename, account_type)
         
         if not transactions_data:
