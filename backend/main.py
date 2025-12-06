@@ -457,11 +457,15 @@ def update_transaction(
     category: Optional[str] = None,
     subcategory: Optional[str] = None,
     transaction_type: Optional[str] = None,
+    apply_to_all_matching: bool = True,  # Automatically update matching vendors
     db: Session = Depends(get_db)
 ):
-    """Update a transaction's category and learn from it"""
-    from fastapi import Query
+    """
+    Update a transaction's category and learn from it.
     
+    If apply_to_all_matching is True (default), also updates all other
+    transactions from the same vendor with the new category.
+    """
     transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
@@ -480,6 +484,16 @@ def update_transaction(
     except Exception as learn_error:
         print(f"Learning error (non-fatal): {learn_error}")
     
+    # Update all matching vendor transactions if requested
+    matching_updated = 0
+    if apply_to_all_matching and category is not None:
+        try:
+            matching_updated = category_learner.update_matching_transactions(
+                db, transaction, category, subcategory, transaction_type
+            )
+        except Exception as bulk_error:
+            print(f"Bulk update error (non-fatal): {bulk_error}")
+    
     db.commit()
     db.refresh(transaction)
     
@@ -490,7 +504,8 @@ def update_transaction(
             "category": transaction.category,
             "subcategory": transaction.subcategory,
             "transaction_type": transaction.transaction_type
-        }
+        },
+        "matching_updated": matching_updated
     }
 
 @app.get("/api/category-learning")

@@ -5,6 +5,8 @@ import pandas as pd
 from PyPDF2 import PdfReader
 import io
 
+from parsers.vendor_normalizer import vendor_normalizer
+
 class StatementParser:
     """Parse bank and credit card statements from PDF and CSV files"""
     
@@ -72,17 +74,29 @@ class StatementParser:
                         amount = self._extract_amount(amount_str)
                         description = str(row[desc_col])
                         
-                        # Preserve original amount with sign for debit/credit detection
-                        # Don't convert to absolute value here - let the upload handler decide
+                        # Extract vendor name and detect transaction type
+                        vendor = vendor_normalizer.extract_vendor(description)
+                        transaction_type = vendor_normalizer.detect_transaction_type(description, amount, account_type)
+                        subtype = vendor_normalizer.get_transaction_subtype(description)
+                        
+                        # Skip balance entries and non-transactions (totals, summaries, etc.)
+                        if transaction_type in ('balance', 'ignore'):
+                            print(f"Skipping non-transaction: {description}")
+                            continue
+                        
                         transactions.append({
                             'date': date,
-                            'amount': amount,  # Keep original sign
-                            'original_amount': amount,  # Keep original sign
+                            'amount': amount,
+                            'original_amount': amount,
                             'currency': currency,
                             'description': description,
-                            'category': self._categorize_transaction(description)
+                            'vendor': vendor,
+                            'transaction_type': transaction_type,
+                            'subtype': subtype,
+                            'category': self._categorize_transaction(description, subtype)
                         })
-                    except:
+                    except Exception as e:
+                        print(f"Error parsing CSV row: {e}")
                         continue
             
             return transactions
@@ -108,16 +122,28 @@ class StatementParser:
                     amount = self._extract_amount(amount_str)
                     description = ','.join(parts[2:])
                     
-                    # Preserve original amount with sign for debit/credit detection
+                    # Extract vendor and detect transaction type
+                    vendor = vendor_normalizer.extract_vendor(description)
+                    transaction_type = vendor_normalizer.detect_transaction_type(description, amount, account_type)
+                    subtype = vendor_normalizer.get_transaction_subtype(description)
+                    
+                    # Skip balance entries and non-transactions
+                    if transaction_type in ('balance', 'ignore'):
+                        continue
+                    
                     transactions.append({
                         'date': date,
-                        'amount': amount,  # Keep original sign
-                        'original_amount': amount,  # Keep original sign
+                        'amount': amount,
+                        'original_amount': amount,
                         'currency': currency,
                         'description': description,
-                        'category': self._categorize_transaction(description)
+                        'vendor': vendor,
+                        'transaction_type': transaction_type,
+                        'subtype': subtype,
+                        'category': self._categorize_transaction(description, subtype)
                     })
-                except:
+                except Exception as e:
+                    print(f"Error parsing generic CSV line: {e}")
                     continue
         
         return transactions
@@ -150,7 +176,8 @@ class StatementParser:
                         date_str = match.group()
                         current_date = self._parse_date(date_str)
                         break
-                    except:
+                    except Exception as e:
+                        print(f"Error parsing date from PDF: {e}")
                         continue
             
             # Look for amount patterns
@@ -169,7 +196,8 @@ class StatementParser:
                             'description': description,
                             'category': self._categorize_transaction(description)
                         })
-                except:
+                except Exception as e:
+                    print(f"Error extracting transaction from PDF: {e}")
                     continue
         
         return transactions
@@ -185,27 +213,77 @@ class StatementParser:
         for fmt in formats:
             try:
                 return datetime.strptime(date_str, fmt)
-            except:
+            except ValueError:
                 continue
         
         return datetime.now()
     
-    def _categorize_transaction(self, description: str) -> str:
-        """Categorize transaction based on description"""
+    def _categorize_transaction(self, description: str, subtype: str = None) -> str:
+        """Categorize transaction based on description and subtype"""
         desc_lower = description.lower()
         
+        # Handle subtypes first (more specific)
+        if subtype:
+            if subtype == 'fee':
+                return 'Fees & Charges'
+            elif subtype == 'transfer':
+                return 'Transfers'
+            elif subtype == 'atm':
+                return 'Cash Withdrawal'
+            elif subtype == 'payment':
+                return 'Bills & Utilities'
+            elif subtype == 'credit' and any(kw in desc_lower for kw in ['salary', 'payroll', 'deposit']):
+                return 'Income'
+        
+        # Enhanced category keywords with more patterns
         categories = {
-            'Food & Dining': ['restaurant', 'cafe', 'food', 'dining', 'starbucks', 'mcdonald', 'uber eats', 'doordash', 'grubhub'],
-            'Shopping': ['amazon', 'target', 'walmart', 'store', 'shop', 'retail', 'purchase'],
-            'Transportation': ['uber', 'lyft', 'gas', 'fuel', 'parking', 'metro', 'subway', 'taxi'],
-            'Bills & Utilities': ['electric', 'water', 'gas', 'internet', 'phone', 'utility', 'bill'],
-            'Entertainment': ['netflix', 'spotify', 'movie', 'theater', 'concert', 'game', 'entertainment'],
-            'Healthcare': ['pharmacy', 'hospital', 'doctor', 'medical', 'cvs', 'walgreens', 'health'],
-            'Education': ['school', 'university', 'tuition', 'course', 'education'],
-            'Travel': ['hotel', 'flight', 'airline', 'travel', 'booking', 'airbnb'],
-            'Groceries': ['grocery', 'supermarket', 'whole foods', 'trader joe', 'safeway'],
-            'Subscriptions': ['subscription', 'membership', 'prime', 'premium'],
-            'Other': []
+            'Food & Dining': [
+                'restaurant', 'cafe', 'coffee', 'food', 'dining', 'starbucks', 'mcdonald', 
+                'uber eats', 'doordash', 'grubhub', 'swiggy', 'zomato', 'pizza', 'burger',
+                'subway', 'kfc', 'dominos', 'dunkin', 'chipotle', 'taco bell'
+            ],
+            'Shopping': [
+                'amazon', 'target', 'walmart', 'store', 'shop', 'retail', 'purchase',
+                'flipkart', 'myntra', 'ebay', 'ikea', 'costco', 'best buy', 'nordstrom'
+            ],
+            'Transportation': [
+                'uber', 'lyft', 'ola', 'gas', 'fuel', 'parking', 'metro', 'subway', 'taxi',
+                'petrol', 'diesel', 'shell', 'chevron', 'bp', 'exxon', 'toll', 'cab'
+            ],
+            'Bills & Utilities': [
+                'electric', 'water', 'gas bill', 'internet', 'phone', 'utility', 'bill',
+                'broadband', 'wifi', 'mobile', 'airtel', 'jio', 'vodafone', 'verizon', 'at&t'
+            ],
+            'Entertainment': [
+                'netflix', 'spotify', 'movie', 'theater', 'concert', 'game', 'entertainment',
+                'disney', 'hbo', 'prime video', 'hulu', 'youtube', 'gaming', 'playstation', 'xbox'
+            ],
+            'Healthcare': [
+                'pharmacy', 'hospital', 'doctor', 'medical', 'cvs', 'walgreens', 'health',
+                'dental', 'clinic', 'medicine', 'apollo', 'lab', 'diagnostic'
+            ],
+            'Education': [
+                'school', 'university', 'tuition', 'course', 'education', 'udemy', 'coursera',
+                'college', 'academy', 'book', 'learning'
+            ],
+            'Travel': [
+                'hotel', 'flight', 'airline', 'travel', 'booking', 'airbnb', 'makemytrip',
+                'indigo', 'spicejet', 'marriott', 'hilton', 'expedia', 'trivago'
+            ],
+            'Groceries': [
+                'grocery', 'supermarket', 'whole foods', 'trader joe', 'safeway', 'kroger',
+                'big bazaar', 'dmart', 'reliance fresh', 'organic', 'vegetables', 'fruits'
+            ],
+            'Subscriptions': [
+                'subscription', 'membership', 'prime', 'premium', 'monthly', 'annual'
+            ],
+            'Income': [
+                'salary', 'payroll', 'deposit', 'income', 'dividend', 'interest credit',
+                'refund', 'cashback', 'bonus', 'reimbursement'
+            ],
+            'Transfers': [
+                'transfer', 'neft', 'imps', 'upi', 'rtgs', 'wire', 'zelle', 'venmo'
+            ],
         }
         
         for category, keywords in categories.items():

@@ -5,8 +5,13 @@ import { motion } from 'framer-motion'
 import { getTrends, getCategories } from '@/lib/api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts'
 import { TrendingUp, TrendingDown } from 'lucide-react'
+import { formatCurrency } from '@/lib/currency'
 
-export default function TrendsView() {
+interface TrendsViewProps {
+  currency?: string
+}
+
+export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
   const [trends, setTrends] = useState<any>(null)
   const [categories, setCategories] = useState<any>(null)
   const [loading, setLoading] = useState(true)
@@ -103,7 +108,7 @@ export default function TrendsView() {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
-            <Tooltip formatter={(value: number) => `$${value.toLocaleString()}`} />
+            <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
             <Legend />
             <Line
               type="monotone"
@@ -130,7 +135,7 @@ export default function TrendsView() {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
-            <Tooltip formatter={(value: number) => `$${value.toLocaleString()}`} />
+            <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
             <Bar dataKey="total" fill="#8b5cf6" name="Monthly Total" />
           </BarChart>
         </ResponsiveContainer>
@@ -145,7 +150,7 @@ export default function TrendsView() {
         >
           <p className="text-blue-100 text-sm mb-2">Average Monthly Spending</p>
           <p className="text-3xl font-bold">
-            ${Math.round(trendData.reduce((sum: number, t: any) => sum + t.total, 0) / trendData.length).toLocaleString()}
+            {formatCurrency(Math.round(trendData.reduce((sum: number, t: any) => sum + t.total, 0) / trendData.length), currency)}
           </p>
         </motion.div>
 
@@ -157,7 +162,7 @@ export default function TrendsView() {
         >
           <p className="text-purple-100 text-sm mb-2">Highest Month</p>
           <p className="text-3xl font-bold">
-            ${Math.max(...trendData.map((t: any) => t.total)).toLocaleString()}
+            {formatCurrency(Math.max(...trendData.map((t: any) => t.total)), currency)}
           </p>
         </motion.div>
 
@@ -169,7 +174,7 @@ export default function TrendsView() {
         >
           <p className="text-pink-100 text-sm mb-2">Lowest Month</p>
           <p className="text-3xl font-bold">
-            ${Math.min(...trendData.map((t: any) => t.total)).toLocaleString()}
+            {formatCurrency(Math.min(...trendData.map((t: any) => t.total)), currency)}
           </p>
         </motion.div>
       </div>

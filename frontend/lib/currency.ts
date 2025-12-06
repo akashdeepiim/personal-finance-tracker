@@ -18,9 +18,9 @@ export const formatCurrency = (amount: number, currency: string = 'USD'): string
   }
 
   const symbol = symbols[currency.toUpperCase()] || currency.toUpperCase()
-  
+
   // Format based on currency
-  if (currency.toUpperCase() in ['JPY', 'KRW']) {
+  if (['JPY', 'KRW'].includes(currency.toUpperCase())) {
     return `${symbol}${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}`
   } else {
     return `${symbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`

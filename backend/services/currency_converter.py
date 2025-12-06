@@ -77,9 +77,20 @@ class CurrencyConverter:
             return self.rates_cache
         return self.FALLBACK_RATES
     
+    def _is_cache_expired(self) -> bool:
+        """Check if the cache has expired"""
+        if os.path.exists(self.cache_file):
+            try:
+                with open(self.cache_file, 'r') as f:
+                    cache = json.load(f)
+                    return datetime.now().timestamp() - cache.get('timestamp', 0) >= self.cache_duration
+            except:
+                return True
+        return True
+    
     def get_rates(self) -> Dict:
         """Get current exchange rates"""
-        if not self.rates_cache:
+        if not self.rates_cache or self._is_cache_expired():
             self.rates_cache = self._fetch_rates()
         return self.rates_cache
     

@@ -16,7 +16,7 @@ const API_BASE = 'http://localhost:8000'
 export default function Home() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [refreshKey, setRefreshKey] = useState(0)
-  const [selectedCurrency, setSelectedCurrency] = useState('USD')
+  const [selectedCurrency, setSelectedCurrency] = useState('INR')
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: Wallet },
@@ -47,7 +47,7 @@ export default function Home() {
             </h1>
             <p className="text-gray-600 mt-1">Track, Analyze, and Optimize Your Spending</p>
           </div>
-          <CurrencySelector 
+          <CurrencySelector
             selectedCurrency={selectedCurrency}
             onCurrencyChange={setSelectedCurrency}
           />

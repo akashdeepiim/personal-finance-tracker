@@ -1,7 +1,13 @@
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from sqlalchemy.orm import Session
 from models import CategoryLearning, Transaction
 import re
+
+# Import vendor normalizer for better vendor matching
+try:
+    from parsers.vendor_normalizer import vendor_normalizer
+except ImportError:
+    vendor_normalizer = None
 
 class CategoryLearner:
     """Learn from user category assignments and auto-tag similar transactions"""
@@ -14,13 +20,20 @@ class CategoryLearner:
         try:
             description = transaction.description.lower()
             
-            # Extract vendor/merchant name (usually first few words)
-            words = description.split()
-            vendor_pattern = ' '.join(words[:3]) if len(words) >= 3 else description[:30]
+            # Use vendor normalizer if available for better extraction
+            if vendor_normalizer:
+                vendor_pattern = vendor_normalizer.extract_vendor(description)
+            else:
+                # Fallback: first few words
+                words = description.split()
+                vendor_pattern = ' '.join(words[:3]) if len(words) >= 3 else description[:30]
+            
+            # Escape LIKE special characters
+            escaped_pattern = vendor_pattern.replace('%', '\\%').replace('_', '\\_')
             
             # Check if we already have a learning rule for this pattern
             existing = db.query(CategoryLearning).filter(
-                CategoryLearning.vendor_pattern.like(f"%{vendor_pattern}%")
+                CategoryLearning.vendor_pattern.like(f"%{escaped_pattern}%")
             ).first()
             
             if existing:
@@ -52,6 +65,75 @@ class CategoryLearner:
         except Exception as e:
             print(f"Error learning from transaction: {e}")
             db.rollback()
+    
+    def update_matching_transactions(
+        self, 
+        db: Session, 
+        transaction: Transaction,
+        category: str,
+        subcategory: str = None,
+        transaction_type: str = None
+    ) -> int:
+        """
+        Update all transactions that match the same vendor as the given transaction.
+        
+        Returns:
+            Number of transactions updated
+        """
+        try:
+            description = transaction.description.lower()
+            
+            # Extract vendor pattern
+            if vendor_normalizer:
+                vendor = vendor_normalizer.extract_vendor(description)
+            else:
+                words = description.split()
+                vendor = ' '.join(words[:3]) if len(words) >= 3 else description[:30]
+            
+            if not vendor or len(vendor) < 2:
+                return 0
+            
+            # Find all transactions with matching vendor
+            # Use case-insensitive LIKE search
+            all_transactions = db.query(Transaction).all()
+            updated_count = 0
+            
+            for t in all_transactions:
+                if t.id == transaction.id:
+                    continue  # Skip the original transaction (already updated)
+                
+                # Check if vendors match
+                if vendor_normalizer:
+                    is_match, confidence = vendor_normalizer.match_vendors(
+                        transaction.description, 
+                        t.description
+                    )
+                    if is_match and confidence >= 0.7:
+                        # Update this transaction
+                        t.category = category
+                        if subcategory:
+                            t.subcategory = subcategory
+                        if transaction_type:
+                            t.transaction_type = transaction_type
+                        updated_count += 1
+                else:
+                    # Fallback: simple substring match
+                    t_vendor = ' '.join(t.description.lower().split()[:3])
+                    if vendor in t_vendor or t_vendor in vendor:
+                        t.category = category
+                        if subcategory:
+                            t.subcategory = subcategory
+                        if transaction_type:
+                            t.transaction_type = transaction_type
+                        updated_count += 1
+            
+            db.commit()
+            return updated_count
+            
+        except Exception as e:
+            print(f"Error updating matching transactions: {e}")
+            db.rollback()
+            return 0
     
     def suggest_category(self, db: Session, description: str, amount: float, account_type: str) -> Optional[Dict]:
         """Suggest category based on learned patterns"""

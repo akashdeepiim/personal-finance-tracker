@@ -22,10 +22,6 @@ export default function Dashboard({ currency = 'USD' }: DashboardProps) {
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1)
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
 
-  useEffect(() => {
-    loadData()
-  }, [selectedMonth, selectedYear])
-
   const loadData = async () => {
     setLoading(true)
     try {
@@ -176,7 +172,7 @@ export default function Dashboard({ currency = 'USD' }: DashboardProps) {
                 cx="50%"
                 cy="50%"
                 labelLine={false}
-                label={({ name, percentage }) => `${name}: ${percentage.toFixed(1)}%`}
+                label={({ name, percentage }) => percentage >= 5 ? `${name}: ${percentage.toFixed(0)}%` : ''}
                 outerRadius={100}
                 fill="#8884d8"
                 dataKey="value"
@@ -227,9 +223,8 @@ export default function Dashboard({ currency = 'USD' }: DashboardProps) {
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: index * 0.1 }}
-                className={`p-4 rounded-lg border-l-4 ${
-                  rec.severity === 'high' ? 'border-red-500 bg-red-50' : 'border-yellow-500 bg-yellow-50'
-                }`}
+                className={`p-4 rounded-lg border-l-4 ${rec.severity === 'high' ? 'border-red-500 bg-red-50' : 'border-yellow-500 bg-yellow-50'
+                  }`}
               >
                 <div className="flex items-start justify-between">
                   <div className="flex-1">

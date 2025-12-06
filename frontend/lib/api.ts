@@ -13,7 +13,7 @@ export const uploadStatement = async (file: File, accountType: string) => {
   const formData = new FormData()
   formData.append('file', file)
   formData.append('account_type', accountType)
-  
+
   const response = await api.post('/api/upload-statement', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
@@ -22,12 +22,13 @@ export const uploadStatement = async (file: File, accountType: string) => {
   return response.data
 }
 
-export const getTransactions = async (month?: number, year?: number, category?: string) => {
+export const getTransactions = async (month?: number, year?: number, category?: string, currency?: string) => {
   const params: any = {}
   if (month) params.month = month
   if (year) params.year = year
   if (category) params.category = category
-  
+  if (currency) params.currency = currency
+
   const response = await api.get('/api/transactions', { params })
   return response.data
 }
@@ -81,15 +82,22 @@ export const clearAllData = async () => {
   return response.data
 }
 
-export const updateTransaction = async (transactionId: number, category?: string, subcategory?: string, transactionType?: string) => {
+export const updateTransaction = async (
+  transactionId: number,
+  category?: string,
+  subcategory?: string,
+  transactionType?: string,
+  applyToAllMatching: boolean = true  // Default: update all matching vendors
+) => {
   const params = new URLSearchParams()
   if (category !== undefined && category !== null) params.append('category', category)
   if (subcategory !== undefined && subcategory !== null) params.append('subcategory', subcategory)
   if (transactionType !== undefined && transactionType !== null) params.append('transaction_type', transactionType)
-  
+  params.append('apply_to_all_matching', String(applyToAllMatching))
+
   const queryString = params.toString()
   const url = `/api/transactions/${transactionId}${queryString ? '?' + queryString : ''}`
-  
+
   const response = await api.put(url)
   return response.data
 }

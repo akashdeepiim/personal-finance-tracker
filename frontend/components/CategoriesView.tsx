@@ -19,24 +19,25 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Load categories and transactions on mount and when currency changes
   useEffect(() => {
     loadData()
   }, [currency])
 
+  // Load filtered transactions when category selection changes
   useEffect(() => {
-    if (selectedCategory) {
-      loadTransactions(selectedCategory)
-    } else {
-      loadTransactions()
+    // Only run on category change, not on initial render
+    if (!loading) {
+      loadTransactions(selectedCategory || undefined)
     }
-  }, [selectedCategory, currency])
+  }, [selectedCategory])
 
   const loadData = async () => {
     setLoading(true)
     try {
       const [categoriesData, transactionsData] = await Promise.all([
-        getCategories(),
-        getTransactions(),
+        getCategories(currency),
+        getTransactions(undefined, undefined, undefined, currency),
       ])
       setCategories(categoriesData)
       setTransactions(transactionsData)
@@ -102,7 +103,7 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
               cx="50%"
               cy="50%"
               labelLine={false}
-              label={({ name, percentage }) => `${name}: ${percentage.toFixed(1)}%`}
+              label={({ name, percentage }) => percentage >= 5 ? `${name}: ${percentage.toFixed(0)}%` : ''}
               outerRadius={120}
               fill="#8884d8"
               dataKey="value"
@@ -111,7 +112,7 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
               ))}
             </Pie>
-              <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
+            <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
             <Legend />
           </PieChart>
         </ResponsiveContainer>
@@ -170,24 +171,21 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
                   initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: index * 0.02 }}
-                  className={`flex items-center justify-between p-3 rounded-lg hover:bg-gray-100 transition-colors ${
-                    isIncome ? 'bg-green-50 border border-green-200' : 'bg-gray-50'
-                  }`}
+                  className={`flex items-center justify-between p-3 rounded-lg hover:bg-gray-100 transition-colors ${isIncome ? 'bg-green-50 border border-green-200' : 'bg-gray-50'
+                    }`}
                 >
                   <div className="flex-1">
                     <p className="font-medium text-gray-800">{transaction.description}</p>
                     <p className="text-sm text-gray-500">
-                      {format(new Date(transaction.date), 'MMM dd, yyyy')} • 
-                      <span className={`px-2 py-0.5 rounded text-xs ml-2 ${
-                        isIncome ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
-                      }`}>
+                      {format(new Date(transaction.date), 'MMM dd, yyyy')} •
+                      <span className={`px-2 py-0.5 rounded text-xs ml-2 ${isIncome ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                        }`}>
                         {transaction.category || 'Other'}
                       </span>
                     </p>
                   </div>
-                  <p className={`text-lg font-semibold ${
-                    isIncome ? 'text-green-600' : 'text-red-600'
-                  }`}>
+                  <p className={`text-lg font-semibold ${isIncome ? 'text-green-600' : 'text-red-600'
+                    }`}>
                     {isIncome ? '+' : '-'}{formatCurrency(transaction.amount, currency)}
                   </p>
                 </motion.div>

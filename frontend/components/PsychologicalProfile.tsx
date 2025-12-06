@@ -5,11 +5,13 @@ import { motion } from 'framer-motion'
 import { getPsychologicalProfile, getAnalysis } from '@/lib/api'
 import { Brain, TrendingUp, AlertTriangle, CheckCircle, Target } from 'lucide-react'
 
-export default function PsychologicalProfile() {
+interface PsychologicalProfileProps {
+  currency?: string
+}
+
+export default function PsychologicalProfile({ currency = 'USD' }: PsychologicalProfileProps) {
   const [profile, setProfile] = useState<any>(null)
   const [loading, setLoading] = useState(true)
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1)
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
 
   useEffect(() => {
     loadProfile()
@@ -122,10 +124,9 @@ export default function PsychologicalProfile() {
                 initial={{ width: 0 }}
                 animate={{ width: `${profile.impulse_indicators.percentage}%` }}
                 transition={{ duration: 1 }}
-                className={`h-3 rounded-full ${
-                  profile.impulse_indicators.risk_level === 'high' ? 'bg-red-500' :
+                className={`h-3 rounded-full ${profile.impulse_indicators.risk_level === 'high' ? 'bg-red-500' :
                   profile.impulse_indicators.risk_level === 'medium' ? 'bg-yellow-500' : 'bg-green-500'
-                }`}
+                  }`}
               />
             </div>
           </div>
@@ -229,7 +230,7 @@ export default function PsychologicalProfile() {
         <h3 className="text-lg font-semibold text-gray-800 mb-3">💡 Insights</h3>
         <p className="text-gray-700 leading-relaxed">
           Based on your spending patterns, you exhibit a <strong>{profile.spending_personality}</strong> personality.
-          {profile.impulse_indicators?.risk_level === 'high' && 
+          {profile.impulse_indicators?.risk_level === 'high' &&
             ' Consider implementing a 24-hour waiting period before making non-essential purchases to reduce impulse spending.'
           }
           {profile.strengths && profile.strengths.length > 0 &&
