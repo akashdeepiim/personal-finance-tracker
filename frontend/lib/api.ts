@@ -14,11 +14,7 @@ export const uploadStatement = async (file: File, accountType: string) => {
   formData.append('file', file)
   formData.append('account_type', accountType)
 
-  const response = await api.post('/api/upload-statement', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  })
+  const response = await api.post('/api/upload-statement', formData)
   return response.data
 }
 

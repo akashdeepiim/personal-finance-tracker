@@ -21,7 +21,7 @@ app = FastAPI(title="Personal Finance Tracker API")
 
 # CORS middleware
 import os
-origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000")
+origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,https://expenses.akash-deep.com")
 origins = [origin.strip() for origin in origins_str.split(",")]
 
 app.add_middleware(
