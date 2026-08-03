@@ -1,41 +1,38 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import { getTrends, getCategories } from '@/lib/api'
+import { getTrends } from '@/lib/api'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts'
 import { TrendingUp, TrendingDown } from 'lucide-react'
 import { formatCurrency } from '@/lib/currency'
+import type { TrendsResponse } from '@/lib/types'
 
 interface TrendsViewProps {
   currency?: string
 }
 
 export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
-  const [trends, setTrends] = useState<any>(null)
-  const [categories, setCategories] = useState<any>(null)
+  const [trends, setTrends] = useState<TrendsResponse | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
   const [months, setMonths] = useState(6)
 
-  useEffect(() => {
-    loadData()
-  }, [months])
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true)
+    setError('')
     try {
-      const [trendsData, categoriesData] = await Promise.all([
-        getTrends(months),
-        getCategories(),
-      ])
+      const trendsData = await getTrends(months, currency)
       setTrends(trendsData)
-      setCategories(categoriesData)
     } catch (error) {
       console.error('Error loading data:', error)
+      setError('Trends could not be loaded. Please try again.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [currency, months])
+
+  useEffect(() => { void loadData() }, [loadData])
 
   if (loading) {
     return (
@@ -49,6 +46,8 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
     )
   }
 
+  if (error) return <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{error}</div>
+
   if (!trends || !trends.trends || trends.trends.length === 0) {
     return (
       <motion.div
@@ -61,9 +60,11 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
     )
   }
 
-  const trendData = trends.trends.map((t: any) => ({
+  const trendData = trends.trends.map((t) => ({
     month: t.month,
     total: Math.round(t.total),
+    income: Math.round(t.income),
+    cashFlow: Math.round(t.net_cash_flow),
   }))
 
   // Calculate trend direction
@@ -108,7 +109,7 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
-            <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
+            <Tooltip formatter={(value) => formatCurrency(Number(value ?? 0), currency)} />
             <Legend />
             <Line
               type="monotone"
@@ -118,6 +119,7 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
               dot={{ fill: '#3b82f6', r: 5 }}
               name="Total Spending"
             />
+            <Line type="monotone" dataKey="income" stroke="#059669" strokeWidth={2} name="Recorded Income" />
           </LineChart>
         </ResponsiveContainer>
       </motion.div>
@@ -135,8 +137,9 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
             <CartesianGrid strokeDasharray="3 3" />
             <XAxis dataKey="month" />
             <YAxis />
-            <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
-            <Bar dataKey="total" fill="#8b5cf6" name="Monthly Total" />
+            <Tooltip formatter={(value) => formatCurrency(Number(value ?? 0), currency)} />
+            <Bar dataKey="total" fill="#8b5cf6" name="Gross Expenses" />
+            <Bar dataKey="income" fill="#10b981" name="Recorded Income" />
           </BarChart>
         </ResponsiveContainer>
       </motion.div>
@@ -150,7 +153,7 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
         >
           <p className="text-blue-100 text-sm mb-2">Average Monthly Spending</p>
           <p className="text-3xl font-bold">
-            {formatCurrency(Math.round(trendData.reduce((sum: number, t: any) => sum + t.total, 0) / trendData.length), currency)}
+            {formatCurrency(Math.round(trendData.reduce((sum: number, t) => sum + t.total, 0) / trendData.length), currency)}
           </p>
         </motion.div>
 
@@ -162,7 +165,7 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
         >
           <p className="text-purple-100 text-sm mb-2">Highest Month</p>
           <p className="text-3xl font-bold">
-            {formatCurrency(Math.max(...trendData.map((t: any) => t.total)), currency)}
+            {formatCurrency(Math.max(...trendData.map((t) => t.total)), currency)}
           </p>
         </motion.div>
 
@@ -174,11 +177,10 @@ export default function TrendsView({ currency = 'USD' }: TrendsViewProps) {
         >
           <p className="text-pink-100 text-sm mb-2">Lowest Month</p>
           <p className="text-3xl font-bold">
-            {formatCurrency(Math.min(...trendData.map((t: any) => t.total)), currency)}
+            {formatCurrency(Math.min(...trendData.map((t) => t.total)), currency)}
           </p>
         </motion.div>
       </div>
     </div>
   )
 }
-

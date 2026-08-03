@@ -1,33 +1,35 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
-import { getPsychologicalProfile, getAnalysis } from '@/lib/api'
+import { getPsychologicalProfile } from '@/lib/api'
 import { Brain, TrendingUp, AlertTriangle, CheckCircle, Target } from 'lucide-react'
+import type { PsychologicalProfileData } from '@/lib/types'
 
 interface PsychologicalProfileProps {
   currency?: string
 }
 
 export default function PsychologicalProfile({ currency = 'USD' }: PsychologicalProfileProps) {
-  const [profile, setProfile] = useState<any>(null)
+  const [profile, setProfile] = useState<PsychologicalProfileData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  useEffect(() => {
-    loadProfile()
-  }, [])
-
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     setLoading(true)
+    setError('')
     try {
-      const profileData = await getPsychologicalProfile()
+      const profileData = await getPsychologicalProfile(currency)
       setProfile(profileData)
     } catch (error) {
       console.error('Error loading profile:', error)
+      setError('Spending patterns could not be loaded. Please try again.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [currency])
+
+  useEffect(() => { void loadProfile() }, [loadProfile])
 
   if (loading) {
     return (
@@ -40,6 +42,8 @@ export default function PsychologicalProfile({ currency = 'USD' }: Psychological
       </div>
     )
   }
+
+  if (error) return <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{error}</div>
 
   if (!profile || profile.message) {
     return (
@@ -75,18 +79,18 @@ export default function PsychologicalProfile({ currency = 'USD' }: Psychological
             <Brain size={32} />
           </div>
           <div>
-            <h2 className="text-3xl font-bold">Your Financial Profile</h2>
-            <p className="text-purple-100 mt-1">Understanding your spending behavior</p>
+            <h2 className="text-3xl font-bold">Spending Patterns</h2>
+            <p className="text-purple-100 mt-1">Descriptive, rule-based observations from recent expenses</p>
           </div>
         </div>
 
         <div className="bg-white/10 backdrop-blur-sm p-6 rounded-lg">
-          <h3 className="text-xl font-semibold mb-2">Spending Personality</h3>
+          <h3 className="text-xl font-semibold mb-2">Observed pattern</h3>
           <p className="text-2xl font-bold">{profile.spending_personality || 'Analyzing...'}</p>
         </div>
       </motion.div>
 
-      {/* Impulse Spending Analysis */}
+      {/* Discretionary Spending Analysis */}
       {profile.impulse_indicators && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -96,27 +100,27 @@ export default function PsychologicalProfile({ currency = 'USD' }: Psychological
         >
           <h3 className="text-xl font-bold mb-4 text-gray-800 flex items-center">
             <Target className="mr-2 text-blue-600" />
-            Impulse Spending Analysis
+            Discretionary category share
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="bg-gray-50 p-4 rounded-lg">
-              <p className="text-sm text-gray-600 mb-1">Impulse Transactions</p>
+              <p className="text-sm text-gray-600 mb-1">Discretionary transactions</p>
               <p className="text-2xl font-bold text-gray-800">{profile.impulse_indicators.count}</p>
             </div>
             <div className="bg-gray-50 p-4 rounded-lg">
               <p className="text-sm text-gray-600 mb-1">Total Amount</p>
               <p className="text-2xl font-bold text-gray-800">
-                ${profile.impulse_indicators.total.toLocaleString()}
+                {new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(profile.impulse_indicators.total)}
               </p>
             </div>
             <div className={`p-4 rounded-lg ${getRiskColor(profile.impulse_indicators.risk_level)}`}>
-              <p className="text-sm mb-1">Risk Level</p>
+              <p className="text-sm mb-1">Share level</p>
               <p className="text-2xl font-bold capitalize">{profile.impulse_indicators.risk_level}</p>
             </div>
           </div>
           <div className="mt-4">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-gray-600">Impulse Spending Percentage</span>
+              <span className="text-sm text-gray-600">Shopping, dining and entertainment share</span>
               <span className="text-sm font-semibold">{profile.impulse_indicators.percentage}%</span>
             </div>
             <div className="w-full bg-gray-200 rounded-full h-3">
@@ -172,7 +176,7 @@ export default function PsychologicalProfile({ currency = 'USD' }: Psychological
         >
           <h3 className="text-xl font-bold mb-4 text-gray-800 flex items-center">
             <AlertTriangle className="mr-2 text-orange-600" />
-            Risk Factors
+            Concentration checks
           </h3>
           <div className="space-y-2">
             {profile.risk_factors.map((risk: string, index: number) => (
@@ -201,7 +205,7 @@ export default function PsychologicalProfile({ currency = 'USD' }: Psychological
         >
           <h3 className="text-xl font-bold mb-4 text-gray-800 flex items-center">
             <CheckCircle className="mr-2 text-green-600" />
-            Financial Strengths
+            Other observations
           </h3>
           <div className="space-y-2">
             {profile.strengths.map((strength: string, index: number) => (
@@ -227,18 +231,9 @@ export default function PsychologicalProfile({ currency = 'USD' }: Psychological
         transition={{ delay: 0.5 }}
         className="bg-gradient-to-r from-blue-50 to-purple-50 p-6 rounded-xl border border-blue-200"
       >
-        <h3 className="text-lg font-semibold text-gray-800 mb-3">💡 Insights</h3>
-        <p className="text-gray-700 leading-relaxed">
-          Based on your spending patterns, you exhibit a <strong>{profile.spending_personality}</strong> personality.
-          {profile.impulse_indicators?.risk_level === 'high' &&
-            ' Consider implementing a 24-hour waiting period before making non-essential purchases to reduce impulse spending.'
-          }
-          {profile.strengths && profile.strengths.length > 0 &&
-            ' You show good control in essential spending categories, which is a strong foundation for financial health.'
-          }
-        </p>
+        <h3 className="text-lg font-semibold text-gray-800 mb-3">How to read this</h3>
+        <p className="text-sm text-gray-600">These are descriptive heuristics based only on imported transactions. They cannot determine intent, wellbeing, or whether a purchase was impulsive, and they are not financial or psychological advice.</p>
       </motion.div>
     </div>
   )
 }
-

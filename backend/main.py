@@ -1,27 +1,59 @@
-from fastapi import FastAPI, UploadFile, File, Depends, HTTPException, Form
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    Depends,
+    HTTPException,
+    Form,
+    Header,
+    Query,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from sqlalchemy import extract
-from datetime import datetime
-from typing import List, Optional
-import json
+from sqlalchemy import extract, func
+from typing import Optional, Literal
+import os
+import secrets
+import hashlib
+from datetime import timezone
+from pathlib import Path
+from collections import defaultdict
 
-from database import get_db, engine, Base
+from database import get_db
 from models import Transaction, Statement, Analysis, CategoryLearning
 from parsers.statement_parser import StatementParser
 from analytics.financial_analyzer import FinancialAnalyzer
 from services.currency_converter import CurrencyConverter
 from services.category_learner import CategoryLearner
+from migrate_db import migrate_database
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+API_TOKEN = os.getenv("FINANCE_API_TOKEN")
+MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+if ENVIRONMENT == "production" and not API_TOKEN:
+    raise RuntimeError("FINANCE_API_TOKEN is required when ENVIRONMENT=production")
+
+
+def require_api_token(authorization: Optional[str] = Header(default=None)):
+    if API_TOKEN:
+        expected = f"Bearer {API_TOKEN}"
+        if not authorization or not secrets.compare_digest(authorization, expected):
+            raise HTTPException(status_code=401, detail="Invalid or missing API token")
+
 
 # Create database tables
-Base.metadata.create_all(bind=engine)
+migrate_database()
 
-app = FastAPI(title="Personal Finance Tracker API")
+app = FastAPI(
+    title="Personal Finance Tracker API", dependencies=[Depends(require_api_token)]
+)
 
 
 # CORS middleware
-import os
-origins_str = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:8000,https://expenses.akash-deep.com")
+origins_str = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:3000,http://localhost:8000,https://expenses.akash-deep.com",
+)
 origins = [origin.strip() for origin in origins_str.split(",")]
 
 # For debugging - if origins contains "*", allow all origins
@@ -33,7 +65,7 @@ app.add_middleware(
     allow_credentials=not allow_all,  # credentials can't be used with "*"
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["*"],
+    expose_headers=[],
 )
 
 
@@ -42,273 +74,331 @@ analyzer = FinancialAnalyzer()
 currency_converter = CurrencyConverter()
 category_learner = CategoryLearner()
 
+
+def validated_currency(value: Optional[str]) -> str:
+    currency = (value or "USD").upper()
+    if currency not in currency_converter.get_supported_currencies():
+        raise HTTPException(status_code=400, detail=f"Unsupported currency: {currency}")
+    return currency
+
+
 @app.get("/")
 def read_root():
     return {"message": "Personal Finance Tracker API"}
 
+
 @app.post("/api/upload-statement")
 async def upload_statement(
     file: UploadFile = File(...),
-    account_type: str = Form("credit_card"),
-    db: Session = Depends(get_db)
+    account_type: Literal["credit_card", "bank_account"] = Form("credit_card"),
+    db: Session = Depends(get_db),
 ):
     """Upload and parse a statement file"""
+    filename = Path(file.filename or "").name[:255]
+    if Path(filename).suffix.lower() not in {".csv", ".pdf"}:
+        raise HTTPException(
+            status_code=400, detail="Only CSV and PDF statements are supported"
+        )
+    content = await file.read(MAX_UPLOAD_BYTES + 1)
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
+        )
+    file_hash = hashlib.sha256(content).hexdigest()
+    if (
+        db.query(Statement)
+        .filter(
+            Statement.account_type == account_type, Statement.file_hash == file_hash
+        )
+        .first()
+    ):
+        raise HTTPException(
+            status_code=409, detail="This statement has already been uploaded"
+        )
     try:
-        content = await file.read()
-        transactions_data = parser.parse_file(content, file.filename, account_type)
-        
+        transactions_data = parser.parse_file(content, filename, account_type)
+
         if not transactions_data:
             raise HTTPException(status_code=400, detail="No transactions found in file")
-        
+
         # Get month and year from first transaction
-        first_date = transactions_data[0]['date']
+        first_date = transactions_data[0]["date"]
         month = first_date.month
         year = first_date.year
-        
+
         # Detect statement currency (use most common currency from transactions)
-        currencies = [t.get('currency', 'USD') for t in transactions_data]
-        statement_currency = max(set(currencies), key=currencies.count) if currencies else 'USD'
-        
+        currencies = [t.get("currency", "USD") for t in transactions_data]
+        statement_currency = (
+            max(set(currencies), key=currencies.count) if currencies else "USD"
+        )
+
         # Create statement record
         statement = Statement(
-            filename=file.filename,
+            filename=filename,
             account_type=account_type,
             currency=statement_currency,
+            file_hash=file_hash,
             month=month,
-            year=year
+            year=year,
         )
         db.add(statement)
         db.flush()
-        
+
         # Create transaction records with currency conversion
+        saved_count = 0
+        supported_currencies = set(currency_converter.get_supported_currencies())
         for t_data in transactions_data:
-            try:
-                original_amount = t_data.get('original_amount', t_data.get('amount', 0))
-                currency = t_data.get('currency', 'USD')
-                description = t_data.get('description', 'Unknown')
-                
-                # Ensure currency is valid
-                if not currency or currency not in currency_converter.get_supported_currencies():
-                    currency = 'USD'
-                
-                # Determine transaction type (credit = income, debit = expense)
-                # For credit cards: 
-                #   - Negative amounts = credits (payments/refunds = money coming in = income)
-                #   - Positive amounts = debits (purchases = money going out = expenses)
-                # For bank accounts:
-                #   - Positive amounts = credits (deposits = money coming in = income)
-                #   - Negative amounts = debits (withdrawals = money going out = expenses)
-                if account_type == 'credit_card':
-                    # Credit card: negative = payment/refund (income), positive = purchase (expense)
-                    transaction_type = 'credit' if original_amount < 0 else 'debit'
-                else:
-                    # Bank account: positive = deposit (income), negative = withdrawal (expense)
-                    transaction_type = 'credit' if original_amount > 0 else 'debit'
-                
-                # Get suggested category from learning system
-                try:
-                    suggestion = category_learner.suggest_category(db, description, original_amount, account_type)
-                except Exception as learn_error:
-                    print(f"Category learning error: {learn_error}")
-                    suggestion = None
-                
-                # Use suggested category if available, otherwise use parsed category
-                category = suggestion['category'] if suggestion else t_data.get('category')
-                subcategory = suggestion.get('subcategory') if suggestion else None
-                if suggestion and suggestion.get('transaction_type'):
-                    transaction_type = suggestion['transaction_type']
-                
-                # Convert to USD for storage
-                try:
-                    amount_usd = currency_converter.convert(abs(original_amount), currency, 'USD')
-                except Exception as conv_error:
-                    # If conversion fails, assume it's already in USD
-                    print(f"Currency conversion failed: {conv_error}, using original amount")
-                    amount_usd = abs(original_amount)
-                    currency = 'USD'
-                
-                transaction = Transaction(
-                    date=t_data['date'],
-                    amount=amount_usd,  # Always store as positive, use transaction_type to differentiate
-                    original_amount=abs(original_amount),
-                    currency=currency,
-                    description=description,
-                    category=category,
-                    subcategory=subcategory,
-                    transaction_type=transaction_type,
-                    account_type=account_type,
-                    statement_id=statement.id
-                )
-                db.add(transaction)
-            except Exception as t_error:
-                print(f"Error processing transaction: {t_error}")
-                continue  # Skip this transaction and continue with others
-        
+            original_amount = t_data.get("original_amount", t_data.get("amount", 0))
+            currency = t_data.get("currency", "USD")
+            description = str(t_data.get("description", "Unknown")).strip()[:500]
+
+            # Ensure currency is valid
+            if not currency or currency not in supported_currencies:
+                raise ValueError(f"Unsupported currency: {currency}")
+
+            # Preserve explicit neutral/refund classifications from the parser.
+            parsed_type = t_data.get("transaction_type")
+            if parsed_type in {"credit", "debit", "refund", "transfer"}:
+                transaction_type = parsed_type
+            elif account_type == "credit_card":
+                # Credit card: negative = payment/refund (income), positive = purchase (expense)
+                transaction_type = "credit" if original_amount < 0 else "debit"
+            else:
+                # Bank account: positive = deposit (income), negative = withdrawal (expense)
+                transaction_type = "credit" if original_amount > 0 else "debit"
+
+            suggestion = category_learner.suggest_category(
+                db, description, original_amount, account_type
+            )
+
+            # Use suggested category if available, otherwise use parsed category
+            category = suggestion["category"] if suggestion else t_data.get("category")
+            subcategory = suggestion.get("subcategory") if suggestion else None
+            if suggestion and suggestion.get("transaction_type"):
+                transaction_type = suggestion["transaction_type"]
+
+            # Convert to USD for normalized storage
+            amount_usd = currency_converter.convert(
+                abs(original_amount), currency, "USD"
+            )
+
+            transaction = Transaction(
+                date=t_data["date"],
+                amount=amount_usd,  # Always store as positive, use transaction_type to differentiate
+                original_amount=abs(original_amount),
+                currency=currency,
+                description=description,
+                category=category,
+                subcategory=subcategory,
+                transaction_type=transaction_type,
+                account_type=account_type,
+                statement_id=statement.id,
+            )
+            db.add(transaction)
+            saved_count += 1
+
         db.commit()
-        
+
         return {
             "message": "Statement uploaded successfully",
-            "transactions_count": len(transactions_data),
-            "statement_id": statement.id
+            "transactions_count": saved_count,
+            "statement_id": statement.id,
         }
+    except HTTPException:
+        db.rollback()
+        raise
+    except (ValueError, KeyError, TypeError) as e:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        import traceback
-        error_detail = f"{str(e)}\n{traceback.format_exc()}"
-        print(f"Upload error: {error_detail}")
-        raise HTTPException(status_code=500, detail=str(e))
+        db.rollback()
+        raise HTTPException(
+            status_code=500, detail="Unable to process statement"
+        ) from e
 
 
 @app.get("/api/categories")
-def get_categories(currency: Optional[str] = None, db: Session = Depends(get_db)):
+def get_categories(
+    currency: Optional[str] = None,
+    month: Optional[int] = Query(default=None, ge=1, le=12),
+    year: Optional[int] = Query(default=None, ge=1900, le=2200),
+    db: Session = Depends(get_db),
+):
     """Get spending breakdown by category"""
-    transactions = db.query(Transaction).all()
-    
-    target_currency = (currency or 'USD').upper()
-    category_totals = {}
-    
-    for t in transactions:
-        # Only count expenses (debit transactions) for spending categories
-        transaction_type = getattr(t, 'transaction_type', 'debit')
-        if transaction_type == 'credit':
-            continue  # Skip income transactions for spending categories
-        
-        cat = t.category or "Other"
-        if cat not in category_totals:
-            category_totals[cat] = 0
-        
-        original_currency = getattr(t, 'currency', 'USD')
-        original_amount = getattr(t, 'original_amount', t.amount)
-        
-        # Convert to target currency
-        if target_currency != 'USD':
-            amount_usd = currency_converter.convert(original_amount, original_currency, 'USD')
-            converted_amount = currency_converter.convert(amount_usd, 'USD', target_currency)
-        else:
-            converted_amount = currency_converter.convert(original_amount, original_currency, 'USD')
-        
-        category_totals[cat] += converted_amount
-    
+    query = db.query(Transaction)
+    if month is not None:
+        query = query.filter(extract("month", Transaction.date) == month)
+    if year is not None:
+        query = query.filter(extract("year", Transaction.date) == year)
+    target_currency = validated_currency(currency)
+    rows = (
+        query.with_entities(
+            func.coalesce(Transaction.category, "Other"), func.sum(Transaction.amount)
+        )
+        .filter(Transaction.transaction_type == "debit")
+        .group_by(Transaction.category)
+        .all()
+    )
+    category_totals = {
+        category: float(currency_converter.convert(amount, "USD", target_currency))
+        for category, amount in rows
+    }
+
     total = sum(category_totals.values())
-    
+
     return {
         "categories": [
             {
                 "name": cat,
                 "amount": amount,
-                "percentage": (amount / total * 100) if total > 0 else 0
+                "percentage": (amount / total * 100) if total > 0 else 0,
             }
-            for cat, amount in sorted(category_totals.items(), key=lambda x: x[1], reverse=True)
+            for cat, amount in sorted(
+                category_totals.items(), key=lambda x: x[1], reverse=True
+            )
         ],
-        "total": total
+        "total": total,
     }
 
+
 @app.get("/api/analysis/{year}/{month}")
-def get_analysis(year: int, month: int, db: Session = Depends(get_db)):
+def get_analysis(
+    year: int, month: int, currency: str = "USD", db: Session = Depends(get_db)
+):
     """Get or generate analysis for a specific month"""
-    # Check if analysis exists
-    existing = db.query(Analysis).filter(
-        Analysis.month == month,
-        Analysis.year == year
-    ).first()
-    
-    if existing:
-        return {
-            "month": existing.month,
-            "year": existing.year,
-            "total_spending": existing.total_spending,
-            "total_income": getattr(existing, 'total_income', 0.0),
-            "category_breakdown": json.loads(existing.category_breakdown),
-            "savings_recommendations": json.loads(existing.savings_recommendations),
-            "psychological_profile": json.loads(existing.psychological_profile)
-        }
-    
+    if not 1 <= month <= 12 or not 1900 <= year <= 2200:
+        raise HTTPException(status_code=422, detail="Invalid month or year")
+    target_currency = validated_currency(currency)
+
     # Generate new analysis
-    transactions = db.query(Transaction).filter(
-        extract('month', Transaction.date) == month,
-        extract('year', Transaction.date) == year
-    ).all()
-    
+    transactions = (
+        db.query(Transaction)
+        .filter(
+            extract("month", Transaction.date) == month,
+            extract("year", Transaction.date) == year,
+        )
+        .all()
+    )
+
     if not transactions:
-        raise HTTPException(status_code=404, detail="No transactions found for this month")
-    
+        raise HTTPException(
+            status_code=404, detail="No transactions found for this month"
+        )
+
     transactions_data = [
         {
             "date": t.date,
-            "amount": t.amount,
+            "amount": float(
+                currency_converter.convert(t.amount, "USD", target_currency)
+            ),
             "description": t.description,
             "category": t.category,
-            "transaction_type": getattr(t, 'transaction_type', 'debit')
+            "transaction_type": getattr(t, "transaction_type", "debit"),
+            "account_type": t.account_type,
         }
         for t in transactions
     ]
-    
-    analysis = analyzer.analyze_month(transactions_data, month, year)
-    
-    # Save analysis
-    analysis_record = Analysis(
-        month=month,
-        year=year,
-        total_spending=analysis['total_spending'],
-        total_income=analysis.get('total_income', 0.0),
-        category_breakdown=json.dumps(analysis['category_breakdown']),
-        savings_recommendations=json.dumps(analysis['savings_recommendations']),
-        psychological_profile=json.dumps(analysis['psychological_profile'])
-    )
-    db.add(analysis_record)
-    db.commit()
-    
+
+    analysis = analyzer.analyze_month(transactions_data, month, year, target_currency)
+
     return analysis
 
-@app.get("/api/trends")
-def get_trends(
-    months: int = 6,
-    db: Session = Depends(get_db)
-):
-    """Get spending trends over time"""
-    transactions = db.query(Transaction).all()
-    
-    monthly_totals = {}
-    for t in transactions:
-        key = f"{t.date.year}-{t.date.month:02d}"
-        if key not in monthly_totals:
-            monthly_totals[key] = 0
-        monthly_totals[key] += t.amount
-    
-    # Sort by date
-    sorted_months = sorted(monthly_totals.items())[-months:]
-    
+
+@app.get("/api/analysis-periods")
+def get_analysis_periods(db: Session = Depends(get_db)):
+    """Return months that actually contain transactions, newest first."""
+    rows = (
+        db.query(
+            extract("year", Transaction.date),
+            extract("month", Transaction.date),
+            func.count(Transaction.id),
+        )
+        .group_by(extract("year", Transaction.date), extract("month", Transaction.date))
+        .order_by(extract("year", Transaction.date).desc(), extract("month", Transaction.date).desc())
+        .all()
+    )
     return {
-        "trends": [
-            {"month": month, "total": total}
-            for month, total in sorted_months
+        "periods": [
+            {"year": int(year), "month": int(month), "transaction_count": count}
+            for year, month, count in rows
         ]
     }
 
+
+@app.get("/api/trends")
+def get_trends(
+    months: int = Query(default=6, ge=1, le=60),
+    currency: str = "USD",
+    db: Session = Depends(get_db),
+):
+    """Get spending trends over time"""
+    target_currency = validated_currency(currency)
+    transactions = db.query(Transaction).order_by(Transaction.date).all()
+    monthly = defaultdict(list)
+    for transaction in transactions:
+        monthly[transaction.date.strftime("%Y-%m")].append(
+            {
+                "date": transaction.date,
+                "amount": float(currency_converter.convert(transaction.amount, "USD", target_currency)),
+                "description": transaction.description,
+                "category": transaction.category,
+                "transaction_type": transaction.transaction_type,
+                "account_type": transaction.account_type,
+            }
+        )
+    trend_rows = []
+    for period in sorted(monthly)[-months:]:
+        year, month = map(int, period.split("-"))
+        result = analyzer.analyze_month(monthly[period], month, year, target_currency)
+        trend_rows.append(
+            {
+                "month": period,
+                "total": result["gross_spending"],
+                "income": result["total_income"],
+                "refunds": result["total_refunds"],
+                "net_cash_flow": result["net_cash_flow"],
+            }
+        )
+    return {"trends": trend_rows}
+
+
 @app.get("/api/psychological-profile")
-def get_psychological_profile(db: Session = Depends(get_db)):
+def get_psychological_profile(currency: str = "USD", db: Session = Depends(get_db)):
     """Get overall psychological financial profile"""
-    # Get last 3 months of transactions
-    recent_transactions = db.query(Transaction).order_by(
-        Transaction.date.desc()
-    ).limit(100).all()
-    
-    if not recent_transactions:
+    target_currency = validated_currency(currency)
+    latest = db.query(Transaction.date).order_by(Transaction.date.desc()).first()
+    if not latest:
         return {"message": "Insufficient data"}
-    
+    from dateutil.relativedelta import relativedelta
+
+    cutoff = latest[0] - relativedelta(months=3)
+    recent_transactions = (
+        db.query(Transaction)
+        .filter(Transaction.date >= cutoff, Transaction.transaction_type == "debit")
+        .order_by(Transaction.date.desc())
+        .all()
+    )
+
     transactions_data = [
         {
             "date": t.date,
-            "amount": t.amount,
+            "amount": float(
+                currency_converter.convert(t.amount, "USD", target_currency)
+            ),
             "description": t.description,
-            "category": t.category
+            "category": t.category,
         }
         for t in recent_transactions
     ]
-    
+
     category_breakdown = analyzer._get_category_breakdown(transactions_data)
-    profile = analyzer._generate_psychological_profile(transactions_data, category_breakdown)
-    
+    profile = analyzer._generate_psychological_profile(
+        transactions_data, category_breakdown
+    )
+
     return profile
+
 
 @app.delete("/api/transactions/{transaction_id}")
 def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
@@ -316,11 +406,15 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
     transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    
+
     db.delete(transaction)
+    db.query(Analysis).filter(
+        Analysis.month == transaction.date.month, Analysis.year == transaction.date.year
+    ).delete()
     db.commit()
-    
+
     return {"message": "Transaction deleted"}
+
 
 @app.delete("/api/statements/{statement_id}")
 def delete_statement(statement_id: int, db: Session = Depends(get_db)):
@@ -328,16 +422,22 @@ def delete_statement(statement_id: int, db: Session = Depends(get_db)):
     statement = db.query(Statement).filter(Statement.id == statement_id).first()
     if not statement:
         raise HTTPException(status_code=404, detail="Statement not found")
-    
+
     # Delete associated transactions (cascade should handle this, but explicit is better)
-    deleted_count = db.query(Transaction).filter(Transaction.statement_id == statement_id).delete()
+    deleted_count = (
+        db.query(Transaction).filter(Transaction.statement_id == statement_id).delete()
+    )
+    db.query(Analysis).filter(
+        Analysis.month == statement.month, Analysis.year == statement.year
+    ).delete()
     db.delete(statement)
     db.commit()
-    
+
     return {
         "message": "Statement and all associated transactions deleted",
-        "deleted_transactions": deleted_count
+        "deleted_transactions": deleted_count,
     }
+
 
 @app.delete("/api/data/clear-all")
 def clear_all_data(db: Session = Depends(get_db)):
@@ -345,43 +445,63 @@ def clear_all_data(db: Session = Depends(get_db)):
     try:
         # Delete all transactions
         deleted_transactions = db.query(Transaction).delete()
-        
+
         # Delete all statements
         deleted_statements = db.query(Statement).delete()
-        
+
         # Delete all analyses
         deleted_analyses = db.query(Analysis).delete()
-        
+        deleted_learning_rules = db.query(CategoryLearning).delete()
+
         db.commit()
-        
+
         return {
             "message": "All data cleared successfully",
             "deleted_transactions": deleted_transactions,
             "deleted_statements": deleted_statements,
-            "deleted_analyses": deleted_analyses
+            "deleted_analyses": deleted_analyses,
+            "deleted_learning_rules": deleted_learning_rules,
         }
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error clearing data: {str(e)}")
+        raise HTTPException(status_code=500, detail="Unable to clear data") from e
+
 
 @app.get("/api/statements")
-def get_statements(db: Session = Depends(get_db)):
+def get_statements(
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+):
     """Get all uploaded statements"""
-    statements = db.query(Statement).order_by(Statement.upload_date.desc()).all()
-    
+    statements = (
+        db.query(Statement, func.count(Transaction.id))
+        .outerjoin(Transaction, Transaction.statement_id == Statement.id)
+        .group_by(Statement.id)
+        .order_by(Statement.upload_date.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
     return [
         {
             "id": s.id,
             "filename": s.filename,
             "account_type": s.account_type,
-            "currency": getattr(s, 'currency', 'USD'),
-            "upload_date": s.upload_date.isoformat(),
+            "currency": getattr(s, "currency", "USD"),
+            "upload_date": (
+                s.upload_date
+                if s.upload_date.tzinfo
+                else s.upload_date.replace(tzinfo=timezone.utc)
+            ).isoformat(),
             "month": s.month,
             "year": s.year,
-            "transaction_count": len(s.transactions)
+            "transaction_count": transaction_count,
         }
-        for s in statements
+        for s, transaction_count in statements
     ]
+
 
 @app.get("/api/currency/rates")
 def get_currency_rates():
@@ -390,96 +510,99 @@ def get_currency_rates():
     return {
         "base": "USD",
         "rates": rates,
-        "supported_currencies": currency_converter.get_supported_currencies()
+        "supported_currencies": currency_converter.get_supported_currencies(),
     }
+
 
 @app.get("/api/currency/convert")
 def convert_currency(
-    amount: float,
-    from_currency: str = "USD",
-    to_currency: str = "USD"
+    amount: float, from_currency: str = "USD", to_currency: str = "USD"
 ):
     """Convert amount from one currency to another"""
-    converted = currency_converter.convert(amount, from_currency, to_currency)
+    try:
+        converted = currency_converter.convert(amount, from_currency, to_currency)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
         "original_amount": amount,
         "from_currency": from_currency.upper(),
         "to_currency": to_currency.upper(),
-        "converted_amount": converted,
-        "rate": converted / amount if amount != 0 else 0
+        "converted_amount": float(converted),
+        "rate": float(converted) / amount if amount != 0 else 0,
     }
+
 
 @app.get("/api/transactions")
 def get_transactions(
-    month: Optional[int] = None,
-    year: Optional[int] = None,
-    category: Optional[str] = None,
+    month: Optional[int] = Query(default=None, ge=1, le=12),
+    year: Optional[int] = Query(default=None, ge=1900, le=2200),
+    category: Optional[str] = Query(default=None, max_length=100),
     currency: Optional[str] = None,
-    db: Session = Depends(get_db)
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
 ):
     """Get transactions with optional filters and currency conversion"""
     query = db.query(Transaction)
-    
+
     if month:
-        query = query.filter(extract('month', Transaction.date) == month)
+        query = query.filter(extract("month", Transaction.date) == month)
     if year:
-        query = query.filter(extract('year', Transaction.date) == year)
+        query = query.filter(extract("year", Transaction.date) == year)
     if category:
         query = query.filter(Transaction.category == category)
-    
-    transactions = query.order_by(Transaction.date.desc()).all()
-    
+
+    transactions = (
+        query.order_by(Transaction.date.desc()).offset(offset).limit(limit).all()
+    )
+
     # Convert to requested currency if specified
-    target_currency = (currency or 'USD').upper()
-    
+    target_currency = validated_currency(currency)
+
     result = []
     for t in transactions:
-        original_currency = getattr(t, 'currency', 'USD')
-        original_amount = getattr(t, 'original_amount', t.amount)
-        
-        # Convert amount if currency is specified
-        if target_currency != 'USD':
-            # First convert original to USD, then to target
-            amount_usd = currency_converter.convert(original_amount, original_currency, 'USD')
-            converted_amount = currency_converter.convert(amount_usd, 'USD', target_currency)
-        else:
-            converted_amount = currency_converter.convert(original_amount, original_currency, 'USD')
-        
-        result.append({
-            "id": t.id,
-            "date": t.date.isoformat(),
-            "amount": converted_amount,
-            "original_amount": original_amount,
-            "currency": target_currency,
-            "original_currency": original_currency,
-            "description": t.description,
-            "category": t.category,
-            "subcategory": getattr(t, 'subcategory', None),
-            "transaction_type": getattr(t, 'transaction_type', 'debit'),
-            "account_type": t.account_type
-        })
-    
+        original_amount = getattr(t, "original_amount", t.amount)
+        original_currency = getattr(t, "currency", "USD")
+        converted_amount = currency_converter.convert(t.amount, "USD", target_currency)
+
+        result.append(
+            {
+                "id": t.id,
+                "date": t.date.isoformat(),
+                "amount": float(converted_amount),
+                "original_amount": float(original_amount),
+                "currency": target_currency,
+                "original_currency": original_currency,
+                "description": t.description,
+                "category": t.category,
+                "subcategory": getattr(t, "subcategory", None),
+                "transaction_type": getattr(t, "transaction_type", "debit"),
+                "account_type": t.account_type,
+            }
+        )
+
     return result
+
 
 @app.put("/api/transactions/{transaction_id}")
 def update_transaction(
     transaction_id: int,
-    category: Optional[str] = None,
-    subcategory: Optional[str] = None,
-    transaction_type: Optional[str] = None,
-    apply_to_all_matching: bool = True,  # Automatically update matching vendors
-    db: Session = Depends(get_db)
+    category: Optional[str] = Query(default=None, max_length=100),
+    subcategory: Optional[str] = Query(default=None, max_length=100),
+    transaction_type: Optional[Literal["credit", "debit", "refund", "transfer"]] = None,
+    apply_to_all_matching: bool = False,
+    db: Session = Depends(get_db),
 ):
     """
     Update a transaction's category and learn from it.
-    
-    If apply_to_all_matching is True (default), also updates all other
+
+    If apply_to_all_matching is True, also updates all other
     transactions from the same vendor with the new category.
     """
     transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    
+
     # Update transaction
     if category is not None:
         transaction.category = category
@@ -487,40 +610,38 @@ def update_transaction(
         transaction.subcategory = subcategory
     if transaction_type is not None:
         transaction.transaction_type = transaction_type
-    
-    # Learn from this update
-    try:
-        category_learner.learn_from_transaction(db, transaction)
-    except Exception as learn_error:
-        print(f"Learning error (non-fatal): {learn_error}")
-    
+
+    category_learner.learn_from_transaction(db, transaction)
+
     # Update all matching vendor transactions if requested
     matching_updated = 0
     if apply_to_all_matching and category is not None:
-        try:
-            matching_updated = category_learner.update_matching_transactions(
-                db, transaction, category, subcategory, transaction_type
-            )
-        except Exception as bulk_error:
-            print(f"Bulk update error (non-fatal): {bulk_error}")
-    
+        matching_updated = category_learner.update_matching_transactions(
+            db, transaction, category, subcategory, transaction_type
+        )
+
+    db.query(Analysis).filter(
+        Analysis.month == transaction.date.month, Analysis.year == transaction.date.year
+    ).delete()
     db.commit()
     db.refresh(transaction)
-    
+
     return {
         "message": "Transaction updated successfully",
         "transaction": {
             "id": transaction.id,
             "category": transaction.category,
             "subcategory": transaction.subcategory,
-            "transaction_type": transaction.transaction_type
+            "transaction_type": transaction.transaction_type,
         },
-        "matching_updated": matching_updated
+        "matching_updated": matching_updated,
     }
 
-@app.get("/api/category-learning")
-def get_category_learning(db: Session = Depends(get_db)):
-    """Get all learned category patterns"""
-    rules = category_learner.get_learning_rules(db)
-    return {"rules": rules}
 
+@app.get("/api/category-learning")
+def get_category_learning(
+    limit: int = Query(default=200, ge=1, le=1000), db: Session = Depends(get_db)
+):
+    """Get all learned category patterns"""
+    rules = category_learner.get_learning_rules(db, limit)
+    return {"rules": rules}

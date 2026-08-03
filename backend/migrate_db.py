@@ -1,53 +1,80 @@
-"""
-Database migration script to add new columns to existing database
-"""
-from sqlalchemy import create_engine, text
-from database import DATABASE_URL
+"""Small, dialect-aware migration for installations created before schema versioning."""
 
-def migrate_database():
-    """Add new columns if they don't exist"""
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-    
-    with engine.connect() as conn:
-        # Check if original_amount column exists in transactions table
-        try:
-            result = conn.execute(text("PRAGMA table_info(transactions)"))
-            columns = [row[1] for row in result]
-            
-            if 'original_amount' not in columns:
-                print("Adding original_amount column to transactions table...")
-                conn.execute(text("ALTER TABLE transactions ADD COLUMN original_amount REAL NOT NULL DEFAULT 0"))
-                conn.commit()
-                print("✓ Added original_amount column")
-            
-            if 'currency' not in columns:
-                print("Adding currency column to transactions table...")
-                conn.execute(text("ALTER TABLE transactions ADD COLUMN currency VARCHAR NOT NULL DEFAULT 'USD'"))
-                conn.commit()
-                print("✓ Added currency column")
-            
-            # Update existing rows to set original_amount = amount if it's 0
-            conn.execute(text("UPDATE transactions SET original_amount = amount WHERE original_amount = 0"))
-            conn.commit()
-            
-        except Exception as e:
-            print(f"Error checking/updating transactions table: {e}")
-        
-        # Check if currency column exists in statements table
-        try:
-            result = conn.execute(text("PRAGMA table_info(statements)"))
-            columns = [row[1] for row in result]
-            
-            if 'currency' not in columns:
-                print("Adding currency column to statements table...")
-                conn.execute(text("ALTER TABLE statements ADD COLUMN currency VARCHAR NOT NULL DEFAULT 'USD'"))
-                conn.commit()
-                print("✓ Added currency column to statements")
-        except Exception as e:
-            print(f"Error checking/updating statements table: {e}")
-    
-    print("Migration completed!")
+from sqlalchemy import inspect, text
+
+from database import engine
+from models import Base
+
+
+def _columns(table: str) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns(table)}
+
+
+def migrate_database() -> None:
+    Base.metadata.create_all(bind=engine)
+    statements = {
+        "transactions": {
+            "original_amount": "NUMERIC(18, 2) NOT NULL DEFAULT 0",
+            "currency": "VARCHAR NOT NULL DEFAULT 'USD'",
+            "subcategory": "VARCHAR",
+            "transaction_type": "VARCHAR NOT NULL DEFAULT 'debit'",
+        },
+        "statements": {
+            "currency": "VARCHAR NOT NULL DEFAULT 'USD'",
+            "file_hash": "VARCHAR(64)",
+        },
+        "analyses": {"total_income": "NUMERIC(18, 2) NOT NULL DEFAULT 0"},
+    }
+
+    with engine.begin() as connection:
+        tables = set(inspect(engine).get_table_names())
+        for table, additions in statements.items():
+            if table not in tables:
+                continue
+            existing = _columns(table)
+            for name, definition in additions.items():
+                if name not in existing:
+                    connection.execute(
+                        text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
+                    )
+        if engine.dialect.name == "postgresql":
+            for table, column in (
+                ("transactions", "amount"),
+                ("transactions", "original_amount"),
+                ("analyses", "total_spending"),
+                ("analyses", "total_income"),
+            ):
+                connection.execute(
+                    text(
+                        f'ALTER TABLE "{table}" ALTER COLUMN "{column}" '
+                        f'TYPE NUMERIC(18, 2) USING ROUND("{column}"::numeric, 2)'
+                    )
+                )
+        connection.execute(
+            text(
+                "UPDATE transactions SET original_amount = amount "
+                "WHERE original_amount IS NULL OR original_amount = 0"
+            )
+        )
+        connection.execute(
+            text(
+                "DELETE FROM analyses WHERE id NOT IN "
+                "(SELECT MAX(id) FROM analyses GROUP BY year, month)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_analysis_year_month "
+                "ON analyses (year, month)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_statement_account_hash "
+                "ON statements (account_type, file_hash)"
+            )
+        )
+
 
 if __name__ == "__main__":
     migrate_database()
-

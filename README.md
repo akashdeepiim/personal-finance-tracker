@@ -5,8 +5,8 @@ A comprehensive personal finance tracking application that analyzes your spendin
 ## Features
 
 - 📊 **Monthly Expense Tracking**: Track expenses across multiple categories
-- 💰 **Savings Recommendations**: Get AI-powered suggestions on where to save
-- 🧠 **Psychological Financial Profile**: Understand your spending behavior patterns
+- 💰 **Savings Recommendations**: Get rule-based suggestions on where to save
+- 🧠 **Spending Behavior Profile**: Explore rule-based spending patterns
 - 📄 **Statement Parsing**: Automatically parse credit card and bank statements (PDF/CSV)
 - 📈 **Trend Analysis**: Visualize spending trends over time
 - 💾 **Local Storage**: All data stored locally for privacy
@@ -42,6 +42,21 @@ uvicorn main:app --reload
 ```
 
 The backend will run on `http://localhost:8000`
+
+For production, configure both services with the same server-side token:
+
+```bash
+# FastAPI
+ENVIRONMENT=production FINANCE_API_TOKEN='replace-with-a-long-random-value' uvicorn main:app
+
+# Next.js (never prefix these variables with NEXT_PUBLIC_)
+ENVIRONMENT=production BACKEND_API_URL='http://localhost:8000' \
+FINANCE_API_TOKEN='replace-with-the-same-value' \
+FINANCE_APP_PASSWORD='your-private-login-password' \
+FINANCE_SESSION_SECRET='a-separate-long-random-value' npm start
+```
+
+The Next.js server proxies browser requests to FastAPI, so the token is not shipped in client JavaScript. You may also set `MAX_UPLOAD_BYTES` and `ALLOWED_ORIGINS` on the backend.
 
 #### Frontend Setup
 
@@ -87,7 +102,7 @@ The frontend will run on `http://localhost:3000`
 - Average, highest, and lowest month statistics
 - Visual trend indicators
 
-### 🧠 Psychological Profile
+### 🧠 Spending Behavior Profile
 - Spending personality analysis
 - Impulse spending indicators
 - Financial habits identification
@@ -100,10 +115,17 @@ A sample CSV file (`sample_data.csv`) is included for testing. You can upload it
 
 ## Data Privacy
 
-- All data is stored locally in SQLite database
-- No data is sent to external servers
-- Only analysis results are stored for trend tracking
-- Your financial data remains completely private
+- Data is stored in the configured SQLite database by default (or PostgreSQL when `DATABASE_URL` is set)
+- Transaction data is not sent to external servers; the backend fetches public exchange rates
+- Analyses are calculated from local transactions on demand
+- Production access is protected by the configured password, session secret, and backend token
+
+## Verification
+
+```bash
+cd backend && pip install -r requirements-dev.txt && pytest && ruff check .
+cd frontend && npm ci && npm test && npm run lint && npm run build && npm audit --omit=dev
+```
 
 ## Project Structure
 
@@ -122,4 +144,3 @@ personal-finance-tracker/
 │   └── package.json         # Node dependencies
 └── README.md
 ```
-

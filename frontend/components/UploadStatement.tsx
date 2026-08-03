@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { uploadStatement, getStatements, deleteStatement, clearAllData } from '@/lib/api'
 import { Upload, FileText, CheckCircle, AlertCircle, Trash2, AlertTriangle } from 'lucide-react'
+import axios from 'axios'
+import type { Statement } from '@/lib/types'
 
 interface UploadStatementProps {
   onSuccess: () => void
@@ -14,7 +16,7 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
   const [accountType, setAccountType] = useState('credit_card')
   const [uploading, setUploading] = useState(false)
   const [result, setResult] = useState<{ success: boolean; message: string } | null>(null)
-  const [statements, setStatements] = useState<any[]>([])
+  const [statements, setStatements] = useState<Statement[]>([])
   const [loadingStatements, setLoadingStatements] = useState(true)
 
   useEffect(() => {
@@ -48,9 +50,10 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
       await loadStatements()
       onSuccess() // Refresh other views
       alert(`✅ Successfully deleted statement and ${result.deleted_transactions || 0} transactions.`)
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Delete error:', error)
-      alert(error.response?.data?.detail || 'Failed to delete statement. Please try again.')
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined
+      alert(detail || 'Failed to delete statement. Please try again.')
     }
   }
 
@@ -75,8 +78,9 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
       await loadStatements()
       onSuccess() // Refresh other views
       alert('All data has been cleared successfully.')
-    } catch (error: any) {
-      alert(error.response?.data?.detail || 'Failed to clear all data')
+    } catch (error: unknown) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined
+      alert(detail || 'Failed to clear all data')
     }
   }
 
@@ -103,13 +107,13 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
         message: `Successfully uploaded! Found ${response.transactions_count} transactions.`,
       })
       setFile(null)
-      setTimeout(() => {
-        onSuccess()
-      }, 2000)
-    } catch (error: any) {
+      await loadStatements()
+      onSuccess()
+    } catch (error: unknown) {
+      const detail = axios.isAxiosError(error) ? error.response?.data?.detail : undefined
       setResult({
         success: false,
-        message: error.response?.data?.detail || 'Upload failed. Please try again.',
+        message: detail || 'Upload failed. Please try again.',
       })
     } finally {
       setUploading(false)
@@ -152,6 +156,7 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
               <span className="text-gray-700">Bank Account</span>
             </label>
           </div>
+          <p className="mt-2 text-xs text-gray-500">Choose carefully: bank deposits are treated as inflows, while credit-card payments and refunds are credits that should not be counted as income.</p>
         </div>
 
         {/* File Upload Area */}
@@ -174,7 +179,7 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
               >
                 <Upload size={48} className="text-gray-400 mb-4" />
                 <p className="text-gray-600 mb-2">
-                  Click to upload or drag and drop
+                  Click to select a statement
                 </p>
                 <p className="text-sm text-gray-500">
                   PDF or CSV files only
@@ -251,7 +256,7 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
           <ul className="text-sm text-gray-600 space-y-1">
             <li>• PDF statements from banks and credit card companies</li>
             <li>• CSV files with Date, Amount, and Description columns</li>
-            <li>• The system will automatically categorize your transactions</li>
+            <li>• Categories and cash-flow types are suggested automatically; review refunds and transfers in Timeline</li>
           </ul>
         </div>
       </div>
@@ -319,4 +324,3 @@ export default function UploadStatement({ onSuccess }: UploadStatementProps) {
     </motion.div>
   )
 }
-

@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/backend'
 
 export const api = axios.create({
   baseURL: API_BASE,
@@ -20,7 +20,7 @@ export const uploadStatement = async (file: File, accountType: string) => {
 }
 
 export const getTransactions = async (month?: number, year?: number, category?: string, currency?: string) => {
-  const params: any = {}
+  const params: Record<string, string | number> = {}
   if (month) params.month = month
   if (year) params.year = year
   if (category) params.category = category
@@ -30,25 +30,32 @@ export const getTransactions = async (month?: number, year?: number, category?: 
   return response.data
 }
 
-export const getCategories = async (currency?: string) => {
-  const params: any = {}
+export const getCategories = async (currency?: string, month?: number, year?: number) => {
+  const params: Record<string, string | number> = {}
   if (currency) params.currency = currency
+  if (month) params.month = month
+  if (year) params.year = year
   const response = await api.get('/api/categories', { params })
   return response.data
 }
 
-export const getAnalysis = async (year: number, month: number) => {
-  const response = await api.get(`/api/analysis/${year}/${month}`)
+export const getAnalysis = async (year: number, month: number, currency?: string) => {
+  const response = await api.get(`/api/analysis/${year}/${month}`, { params: { currency } })
   return response.data
 }
 
-export const getTrends = async (months: number = 6) => {
-  const response = await api.get('/api/trends', { params: { months } })
+export const getAnalysisPeriods = async () => {
+  const response = await api.get('/api/analysis-periods')
   return response.data
 }
 
-export const getPsychologicalProfile = async () => {
-  const response = await api.get('/api/psychological-profile')
+export const getTrends = async (months: number = 6, currency?: string) => {
+  const response = await api.get('/api/trends', { params: { months, currency } })
+  return response.data
+}
+
+export const getPsychologicalProfile = async (currency?: string) => {
+  const response = await api.get('/api/psychological-profile', { params: { currency } })
   return response.data
 }
 
@@ -84,7 +91,7 @@ export const updateTransaction = async (
   category?: string,
   subcategory?: string,
   transactionType?: string,
-  applyToAllMatching: boolean = true  // Default: update all matching vendors
+  applyToAllMatching: boolean = false
 ) => {
   const params = new URLSearchParams()
   if (category !== undefined && category !== null) params.append('category', category)
@@ -103,4 +110,3 @@ export const getCategoryLearning = async () => {
   const response = await api.get('/api/category-learning')
   return response.data
 }
-

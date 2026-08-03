@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { getCategories, getTransactions } from '@/lib/api'
 import { format } from 'date-fns'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend } from 'recharts'
 import { formatCurrency } from '@/lib/currency'
+import type { CategoriesResponse, CategoryItem, Transaction } from '@/lib/types'
 
 const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#84cc16', '#f97316', '#6366f1']
 
@@ -14,48 +15,40 @@ interface CategoriesViewProps {
 }
 
 export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps) {
-  const [categories, setCategories] = useState<any>(null)
-  const [transactions, setTransactions] = useState<any[]>([])
+  const [categories, setCategories] = useState<CategoriesResponse | null>(null)
+  const [transactions, setTransactions] = useState<Transaction[]>([])
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
 
-  // Load categories and transactions on mount and when currency changes
-  useEffect(() => {
-    loadData()
-  }, [currency])
-
-  // Load filtered transactions when category selection changes
-  useEffect(() => {
-    // Only run on category change, not on initial render
-    if (!loading) {
-      loadTransactions(selectedCategory || undefined)
-    }
-  }, [selectedCategory])
-
-  const loadData = async () => {
+  const loadData = useCallback(async () => {
     setLoading(true)
+    setError('')
     try {
-      const [categoriesData, transactionsData] = await Promise.all([
-        getCategories(currency),
-        getTransactions(undefined, undefined, undefined, currency),
-      ])
+      const categoriesData = await getCategories(currency)
       setCategories(categoriesData)
-      setTransactions(transactionsData)
     } catch (error) {
       console.error('Error loading data:', error)
+      setError('Categories could not be loaded. Please try again.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [currency])
 
-  const loadTransactions = async (category?: string) => {
+  const loadTransactions = useCallback(async (category?: string) => {
     try {
       const data = await getTransactions(undefined, undefined, category, currency)
       setTransactions(data)
     } catch (error) {
       console.error('Error loading transactions:', error)
     }
-  }
+  }, [currency])
+
+  useEffect(() => { void loadData() }, [loadData])
+
+  useEffect(() => {
+    if (!loading) void loadTransactions(selectedCategory || undefined)
+  }, [selectedCategory, loading, loadTransactions])
 
   if (loading) {
     return (
@@ -69,6 +62,8 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
     )
   }
 
+  if (error) return <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{error}</div>
+
   if (!categories || categories.categories.length === 0) {
     return (
       <motion.div
@@ -81,7 +76,7 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
     )
   }
 
-  const categoryData = categories.categories.map((cat: any) => ({
+  const categoryData = categories.categories.map((cat: CategoryItem) => ({
     name: cat.name,
     value: cat.amount,
     percentage: cat.percentage,
@@ -95,7 +90,8 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
         animate={{ opacity: 1, y: 0 }}
         className="bg-white p-6 rounded-xl shadow-lg"
       >
-        <h2 className="text-2xl font-bold mb-6 text-gray-800">Spending by Category</h2>
+        <h2 className="text-2xl font-bold mb-1 text-gray-800">All-time expenses by category</h2>
+        <p className="mb-6 text-sm text-gray-500">Income, refunds, and transfers are excluded.</p>
         <ResponsiveContainer width="100%" height={400}>
           <PieChart>
             <Pie
@@ -103,16 +99,19 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
               cx="50%"
               cy="50%"
               labelLine={false}
-              label={({ name, percentage }) => percentage >= 5 ? `${name}: ${percentage.toFixed(0)}%` : ''}
+              label={(props) => {
+                const item = props.payload as { name: string; percentage: number }
+                return item.percentage >= 5 ? `${item.name}: ${item.percentage.toFixed(0)}%` : ''
+              }}
               outerRadius={120}
               fill="#8884d8"
               dataKey="value"
             >
-              {categoryData.map((entry: any, index: number) => (
+              {categoryData.map((_entry, index: number) => (
                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
               ))}
             </Pie>
-            <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
+            <Tooltip formatter={(value) => formatCurrency(Number(value ?? 0), currency)} />
             <Legend />
           </PieChart>
         </ResponsiveContainer>
@@ -120,7 +119,7 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
 
       {/* Category List */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {categories.categories.map((cat: any, index: number) => (
+        {categories.categories.map((cat: CategoryItem, index: number) => (
           <motion.button
             key={cat.name}
             initial={{ opacity: 0, y: 20 }}
@@ -163,7 +162,7 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
             {selectedCategory ? `Transactions - ${selectedCategory}` : 'Recent Transactions'}
           </h2>
           <div className="space-y-2 max-h-96 overflow-y-auto">
-            {transactions.slice(0, 50).map((transaction: any, index: number) => {
+            {transactions.slice(0, 50).map((transaction: Transaction, index: number) => {
               const isIncome = transaction.transaction_type === 'credit'
               return (
                 <motion.div
@@ -197,4 +196,3 @@ export default function CategoriesView({ currency = 'USD' }: CategoriesViewProps
     </div>
   )
 }
-

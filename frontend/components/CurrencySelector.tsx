@@ -41,7 +41,7 @@ export default function CurrencySelector({ selectedCurrency, onCurrencyChange }:
     try {
       const data = await getCurrencyRates()
       setCurrencies(data.supported_currencies || Object.keys(CURRENCY_NAMES))
-    } catch (error) {
+    } catch {
       // Fallback to default currencies
       setCurrencies(Object.keys(CURRENCY_NAMES))
     }
@@ -108,4 +108,3 @@ export default function CurrencySelector({ selectedCurrency, onCurrencyChange }:
     </div>
   )
 }
-

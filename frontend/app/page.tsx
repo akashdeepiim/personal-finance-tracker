@@ -1,17 +1,18 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
+import dynamic from 'next/dynamic'
 import { motion } from 'framer-motion'
-import Dashboard from '@/components/Dashboard'
-import UploadStatement from '@/components/UploadStatement'
-import CategoriesView from '@/components/CategoriesView'
-import TrendsView from '@/components/TrendsView'
-import PsychologicalProfile from '@/components/PsychologicalProfile'
-import TransactionTimeline from '@/components/TransactionTimeline'
 import CurrencySelector from '@/components/CurrencySelector'
-import { Wallet, Upload, PieChart, TrendingUp, Brain, Clock } from 'lucide-react'
+import { Wallet, Upload, PieChart, TrendingUp, Brain, Clock, LogOut } from 'lucide-react'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+const loadingView = () => <div className="flex h-64 items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-600 border-t-transparent" /></div>
+const Dashboard = dynamic(() => import('@/components/Dashboard'), { loading: loadingView })
+const UploadStatement = dynamic(() => import('@/components/UploadStatement'), { loading: loadingView })
+const CategoriesView = dynamic(() => import('@/components/CategoriesView'), { loading: loadingView })
+const TrendsView = dynamic(() => import('@/components/TrendsView'), { loading: loadingView })
+const PsychologicalProfile = dynamic(() => import('@/components/PsychologicalProfile'), { loading: loadingView })
+const TransactionTimeline = dynamic(() => import('@/components/TransactionTimeline'), { loading: loadingView })
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState('dashboard')
@@ -24,12 +25,17 @@ export default function Home() {
     { id: 'timeline', label: 'Timeline', icon: Clock },
     { id: 'categories', label: 'Categories', icon: PieChart },
     { id: 'trends', label: 'Trends', icon: TrendingUp },
-    { id: 'profile', label: 'Profile', icon: Brain },
+    { id: 'profile', label: 'Patterns', icon: Brain },
   ]
 
   const handleUploadSuccess = () => {
     setRefreshKey(prev => prev + 1)
     setActiveTab('dashboard')
+  }
+
+  const handleLogout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST' })
+    window.location.assign('/login')
   }
 
   return (
@@ -40,17 +46,19 @@ export default function Home() {
         animate={{ y: 0, opacity: 1 }}
         className="bg-white shadow-sm border-b border-gray-200"
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex flex-col items-start gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+            <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
               💰 Personal Finance Tracker
             </h1>
             <p className="text-gray-600 mt-1">Track, Analyze, and Optimize Your Spending</p>
           </div>
-          <CurrencySelector
-            selectedCurrency={selectedCurrency}
-            onCurrencyChange={setSelectedCurrency}
-          />
+          <div className="flex items-center gap-2">
+            <CurrencySelector selectedCurrency={selectedCurrency} onCurrencyChange={setSelectedCurrency} />
+            <button onClick={handleLogout} title="Sign out" className="rounded-lg border bg-white p-2 text-gray-600 shadow-md hover:text-red-600">
+              <LogOut size={20} />
+            </button>
+          </div>
         </div>
       </motion.header>
 
@@ -100,4 +108,3 @@ export default function Home() {
     </div>
   )
 }
-

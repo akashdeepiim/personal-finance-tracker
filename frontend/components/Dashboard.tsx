@@ -1,257 +1,142 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import axios from 'axios'
 import { motion } from 'framer-motion'
-import { getAnalysis, getCategories, getTransactions } from '@/lib/api'
+import { getAnalysis, getAnalysisPeriods, getCategories } from '@/lib/api'
 import { format } from 'date-fns'
-import { TrendingUp, AlertCircle, CheckCircle } from 'lucide-react'
-import { getCurrencyIcon } from '@/lib/currency'
-import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend } from 'recharts'
+import { AlertCircle, ArrowDownUp, ReceiptText, WalletCards } from 'lucide-react'
+import { PieChart, Pie, Cell, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip } from 'recharts'
 import { formatCurrency } from '@/lib/currency'
+import type { Analysis, AnalysisPeriod, CategoriesResponse, CategoryItem, Recommendation } from '@/lib/types'
 
-const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#ef4444', '#06b6d4', '#84cc16']
+const COLORS = ['#2563eb', '#7c3aed', '#db2777', '#d97706', '#059669', '#dc2626', '#0891b2', '#65a30d']
 
-interface DashboardProps {
-  currency?: string
-}
-
-export default function Dashboard({ currency = 'USD' }: DashboardProps) {
-  const [analysis, setAnalysis] = useState<any>(null)
-  const [categories, setCategories] = useState<any>(null)
+export default function Dashboard({ currency = 'USD' }: { currency?: string }) {
+  const now = new Date()
+  const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  const [categories, setCategories] = useState<CategoriesResponse | null>(null)
+  const [periods, setPeriods] = useState<AnalysisPeriod[]>([])
+  const [selectedMonth, setSelectedMonth] = useState(now.getMonth() + 1)
+  const [selectedYear, setSelectedYear] = useState(now.getFullYear())
+  const [periodsReady, setPeriodsReady] = useState(false)
   const [loading, setLoading] = useState(true)
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth() + 1)
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear())
-
-  const loadData = async () => {
-    setLoading(true)
-    try {
-      const [analysisData, categoriesData] = await Promise.all([
-        getAnalysis(selectedYear, selectedMonth),
-        getCategories(currency),
-      ])
-      setAnalysis(analysisData)
-      setCategories(categoriesData)
-    } catch (error) {
-      console.error('Error loading data:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
+  const [error, setError] = useState('')
 
   useEffect(() => {
-    loadData()
-  }, [selectedMonth, selectedYear, currency])
+    let active = true
+    getAnalysisPeriods()
+      .then((result) => {
+        if (!active) return
+        const available = result.periods as AnalysisPeriod[]
+        setPeriods(available)
+        if (available.length) {
+          setSelectedYear(available[0].year)
+          setSelectedMonth(available[0].month)
+        }
+      })
+      .catch(() => active && setError('Could not load available statement periods.'))
+      .finally(() => active && setPeriodsReady(true))
+    return () => { active = false }
+  }, [])
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"
-        />
-      </div>
-    )
+  const loadData = useCallback(async () => {
+    if (!periodsReady) return
+    if (periods.length === 0) {
+      setAnalysis(null)
+      setCategories(null)
+      setError('')
+      setLoading(false)
+      return
+    }
+    setLoading(true)
+    setError('')
+    const [analysisResult, categoriesResult] = await Promise.allSettled([
+      getAnalysis(selectedYear, selectedMonth, currency),
+      getCategories(currency, selectedMonth, selectedYear),
+    ])
+    setAnalysis(analysisResult.status === 'fulfilled' ? analysisResult.value : null)
+    setCategories(categoriesResult.status === 'fulfilled' ? categoriesResult.value : null)
+    if (analysisResult.status === 'rejected') {
+      const detail = axios.isAxiosError(analysisResult.reason)
+        ? analysisResult.reason.response?.data?.detail
+        : undefined
+      setError(detail || 'Analysis could not be loaded. Please try again.')
+    }
+    setLoading(false)
+  }, [currency, periods.length, periodsReady, selectedMonth, selectedYear])
+
+  useEffect(() => { void loadData() }, [loadData])
+
+  if (loading || !periodsReady) {
+    return <div className="flex h-64 items-center justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-600 border-t-transparent" /></div>
   }
 
-  if (!analysis && !categories) {
-    return (
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        className="text-center py-12"
-      >
-        <p className="text-gray-600 text-lg">No data available. Upload a statement to get started!</p>
-      </motion.div>
-    )
-  }
-
-  const categoryData = categories?.categories?.map((cat: any) => ({
-    name: cat.name,
-    value: cat.amount,
-    percentage: cat.percentage,
+  const categoryData = categories?.categories?.map((category: CategoryItem) => ({
+    name: category.name, value: category.amount, percentage: category.percentage,
   })) || []
-
   const recommendations = analysis?.savings_recommendations || []
+  const changePeriod = (value: string) => {
+    const [year, month] = value.split('-').map(Number)
+    setSelectedYear(year)
+    setSelectedMonth(month)
+  }
 
   return (
     <div className="space-y-6">
-      {/* Month Selector */}
-      <div className="flex items-center space-x-4 bg-white p-4 rounded-lg shadow">
-        <label className="text-sm font-medium text-gray-700">Month:</label>
-        <select
-          value={selectedMonth}
-          onChange={(e) => setSelectedMonth(Number(e.target.value))}
-          className="border rounded px-3 py-1"
-        >
-          {Array.from({ length: 12 }, (_, i) => i + 1).map((m) => (
-            <option key={m} value={m}>{format(new Date(2000, m - 1), 'MMMM')}</option>
-          ))}
-        </select>
-        <label className="text-sm font-medium text-gray-700">Year:</label>
-        <select
-          value={selectedYear}
-          onChange={(e) => setSelectedYear(Number(e.target.value))}
-          className="border rounded px-3 py-1"
-        >
-          {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i).map((y) => (
-            <option key={y} value={y}>{y}</option>
-          ))}
+      <div className="flex flex-col gap-2 rounded-lg bg-white p-4 shadow sm:flex-row sm:items-center">
+        <label htmlFor="analysis-period" className="text-sm font-medium text-gray-700">Statement period</label>
+        <select id="analysis-period" value={`${selectedYear}-${selectedMonth}`} onChange={(event) => changePeriod(event.target.value)} disabled={!periods.length} className="rounded border px-3 py-2">
+          {periods.length ? periods.map((period) => (
+            <option key={`${period.year}-${period.month}`} value={`${period.year}-${period.month}`}>
+              {format(new Date(period.year, period.month - 1, 1), 'MMMM yyyy')} · {period.transaction_count} transaction{period.transaction_count === 1 ? '' : 's'}
+            </option>
+          )) : <option>No imported periods</option>}
         </select>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-gradient-to-br from-blue-500 to-blue-600 text-white p-6 rounded-xl shadow-lg"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-blue-100 text-sm">Total Spending</p>
-              <p className="text-3xl font-bold mt-2">
-                {formatCurrency(analysis?.total_spending || 0, currency)}
-              </p>
-              {analysis?.total_income && (
-                <p className="text-sm mt-1 text-blue-200">
-                  Income: {formatCurrency(analysis.total_income, currency)}
-                </p>
-              )}
+      {error && <div role="alert" className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">{error}</div>}
+      {!analysis && !error && <p className="rounded-lg bg-blue-50 p-4 text-center text-gray-700">Upload a statement to generate analysis.</p>}
+
+      {analysis && <>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <SummaryCard label="Net spending" value={formatCurrency(analysis.net_spending, currency)} detail={`${formatCurrency(analysis.gross_spending, currency)} gross`} icon={<ReceiptText />} color="blue" />
+          <SummaryCard label="Recorded income" value={formatCurrency(analysis.total_income, currency)} detail={`${analysis.transaction_count} transactions`} icon={<WalletCards />} color="green" />
+          <SummaryCard label="Net cash flow" value={formatCurrency(analysis.net_cash_flow, currency)} detail={analysis.net_cash_flow >= 0 ? 'Income and refunds minus expenses' : 'Negative for this period'} icon={<ArrowDownUp />} color={analysis.net_cash_flow >= 0 ? 'purple' : 'pink'} />
+          <SummaryCard label="Refunds" value={formatCurrency(analysis.total_refunds, currency)} detail={`${formatCurrency(analysis.excluded_transfers, currency)} transfers excluded`} icon={<AlertCircle />} color="slate" />
+        </div>
+
+        {categoryData.length > 0 && <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <ChartCard title="Expense share by category">
+            <ResponsiveContainer width="100%" height={300}><PieChart><Pie data={categoryData} dataKey="value" nameKey="name" outerRadius={100} label={({ payload }) => payload.percentage >= 5 ? `${payload.name}: ${payload.percentage.toFixed(0)}%` : ''}>{categoryData.map((entry, index) => <Cell key={`${entry.name}-${index}`} fill={COLORS[index % COLORS.length]} />)}</Pie><Tooltip formatter={(value) => formatCurrency(Number(value ?? 0), currency)} /></PieChart></ResponsiveContainer>
+          </ChartCard>
+          <ChartCard title="Expenses by category">
+            <ResponsiveContainer width="100%" height={300}><BarChart data={categoryData} margin={{ bottom: 60 }}><XAxis dataKey="name" angle={-35} textAnchor="end" interval={0} /><YAxis /><Tooltip formatter={(value) => formatCurrency(Number(value ?? 0), currency)} /><Bar dataKey="value" name="Expenses" fill="#2563eb" /></BarChart></ResponsiveContainer>
+          </ChartCard>
+        </div>}
+
+        <section className="rounded-xl bg-white p-6 shadow-lg">
+          <h2 className="mb-1 flex items-center text-xl font-bold text-gray-800"><AlertCircle className="mr-2 text-orange-500" />Budget rule checks</h2>
+          <p className="mb-4 text-sm text-gray-600">These checks compare recorded expenses with recorded income using app defaults. They are starting points, not personalized financial advice.</p>
+          {analysis.total_income <= 0 && <p className="rounded bg-amber-50 p-3 text-sm text-amber-900">No income was identified in this period, so income-based checks are unavailable. Mark income, refunds, and transfers correctly in Timeline.</p>}
+          {analysis.total_income > 0 && recommendations.length === 0 && <p className="text-sm text-gray-600">No category exceeded the app’s current rule-of-thumb settings.</p>}
+          <div className="space-y-3">{recommendations.map((rec: Recommendation) => (
+            <div key={rec.category} className={`rounded-lg border-l-4 p-4 ${rec.severity === 'high' ? 'border-red-500 bg-red-50' : 'border-amber-500 bg-amber-50'}`}>
+              <div className="flex flex-col justify-between gap-2 sm:flex-row"><div><h3 className="font-semibold text-gray-800">{rec.category}</h3><p className="mt-1 text-sm text-gray-700">{rec.message}</p><p className="mt-2 text-xs text-gray-600">Recorded: {rec.current_percentage}% · App setting: {rec.recommended_percentage}%</p></div><p className="font-bold text-green-700">{formatCurrency(rec.potential_savings, currency)}</p></div>
             </div>
-            <span className="text-4xl opacity-80">{getCurrencyIcon(currency)}</span>
-          </div>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="bg-gradient-to-br from-purple-500 to-purple-600 text-white p-6 rounded-xl shadow-lg"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-purple-100 text-sm">Categories</p>
-              <p className="text-3xl font-bold mt-2">{categoryData.length}</p>
-            </div>
-            <TrendingUp size={40} className="opacity-80" />
-          </div>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="bg-gradient-to-br from-pink-500 to-pink-600 text-white p-6 rounded-xl shadow-lg"
-        >
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-pink-100 text-sm">Potential Savings</p>
-              <p className="text-3xl font-bold mt-2">
-                {formatCurrency(recommendations.reduce((sum: number, r: any) => sum + (r.potential_savings || 0), 0), currency)}
-              </p>
-            </div>
-            <AlertCircle size={40} className="opacity-80" />
-          </div>
-        </motion.div>
-      </div>
-
-      {/* Charts */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Category Breakdown */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-white p-6 rounded-xl shadow-lg"
-        >
-          <h2 className="text-xl font-bold mb-4 text-gray-800">Category Breakdown</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <PieChart>
-              <Pie
-                data={categoryData}
-                cx="50%"
-                cy="50%"
-                labelLine={false}
-                label={({ name, percentage }) => percentage >= 5 ? `${name}: ${percentage.toFixed(0)}%` : ''}
-                outerRadius={100}
-                fill="#8884d8"
-                dataKey="value"
-              >
-                {categoryData.map((entry: any, index: number) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                ))}
-              </Pie>
-              <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
-            </PieChart>
-          </ResponsiveContainer>
-        </motion.div>
-
-        {/* Category Bar Chart */}
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.1 }}
-          className="bg-white p-6 rounded-xl shadow-lg"
-        >
-          <h2 className="text-xl font-bold mb-4 text-gray-800">Spending by Category</h2>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={categoryData}>
-              <XAxis dataKey="name" angle={-45} textAnchor="end" height={100} />
-              <YAxis />
-              <Tooltip formatter={(value: number) => formatCurrency(value, currency)} />
-              <Bar dataKey="value" fill="#3b82f6" />
-            </BarChart>
-          </ResponsiveContainer>
-        </motion.div>
-      </div>
-
-      {/* Savings Recommendations */}
-      {recommendations.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white p-6 rounded-xl shadow-lg"
-        >
-          <h2 className="text-xl font-bold mb-4 text-gray-800 flex items-center">
-            <AlertCircle className="mr-2 text-orange-500" />
-            Savings Recommendations
-          </h2>
-          <div className="space-y-4">
-            {recommendations.map((rec: any, index: number) => (
-              <motion.div
-                key={index}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.1 }}
-                className={`p-4 rounded-lg border-l-4 ${rec.severity === 'high' ? 'border-red-500 bg-red-50' : 'border-yellow-500 bg-yellow-50'
-                  }`}
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-gray-800">{rec.category}</h3>
-                    <p className="text-sm text-gray-600 mt-1">{rec.message}</p>
-                    <div className="mt-2 flex items-center space-x-4 text-sm">
-                      <span className="text-gray-600">
-                        Current: {rec.current_percentage}%
-                      </span>
-                      <span className="text-gray-600">
-                        Recommended: {rec.recommended_percentage}%
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-lg font-bold text-green-600">
-                      {formatCurrency(rec.potential_savings, currency)}
-                    </p>
-                    <p className="text-xs text-gray-500">potential savings</p>
-                  </div>
-                </div>
-              </motion.div>
-            ))}
-          </div>
-        </motion.div>
-      )}
+          ))}</div>
+        </section>
+        <p className="text-xs text-gray-500">{analysis.analysis_note}</p>
+      </>}
     </div>
   )
 }
 
+function SummaryCard({ label, value, detail, icon, color }: { label: string; value: string; detail: string; icon: React.ReactNode; color: string }) {
+  const colors: Record<string, string> = { blue: 'from-blue-500 to-blue-600', green: 'from-emerald-500 to-emerald-600', purple: 'from-purple-500 to-purple-600', pink: 'from-pink-500 to-pink-600', slate: 'from-slate-600 to-slate-700' }
+  return <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className={`rounded-xl bg-gradient-to-br ${colors[color]} p-5 text-white shadow-lg`}><div className="flex justify-between gap-3"><div><p className="text-sm text-white/80">{label}</p><p className="mt-2 text-2xl font-bold">{value}</p><p className="mt-1 text-xs text-white/75">{detail}</p></div><span className="opacity-80">{icon}</span></div></motion.div>
+}
+
+function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return <section className="rounded-xl bg-white p-6 shadow-lg"><h2 className="mb-4 text-xl font-bold text-gray-800">{title}</h2>{children}</section>
+}
