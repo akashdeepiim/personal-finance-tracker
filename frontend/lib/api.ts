@@ -1,6 +1,8 @@
 import axios from 'axios'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/backend'
+// All browser requests must use the same-origin proxy. The session token is
+// intentionally HttpOnly and only the proxy can forward it to FastAPI.
+const API_BASE = '/api/backend'
 
 export const api = axios.create({
   baseURL: API_BASE,
