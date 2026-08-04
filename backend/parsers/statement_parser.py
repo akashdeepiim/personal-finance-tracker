@@ -550,7 +550,7 @@ class StatementParser:
         try:
             import numpy as np
             import pypdfium2 as pdfium
-            from rapidocr_onnxruntime import RapidOCR
+            from rapidocr import RapidOCR
         except ImportError as exc:
             raise ValueError(
                 "This PDF contains no searchable text and OCR support is unavailable"
@@ -568,9 +568,13 @@ class StatementParser:
                 page = document[page_number]
                 bitmap = page.render(scale=120 / 72)
                 image = np.asarray(bitmap.to_pil().convert("RGB"))
-                result, _ = self._ocr_engine(image)
+                result = self._ocr_engine(image)
                 lines = []
-                for box, text, confidence in result or []:
+                if result is None:
+                    ocr_items = []
+                else:
+                    ocr_items = zip(result.boxes, result.txts, result.scores)
+                for box, text, confidence in ocr_items:
                     if confidence < 0.55 or not str(text).strip():
                         continue
                     lines.append(
