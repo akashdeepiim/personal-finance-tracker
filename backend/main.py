@@ -9,6 +9,7 @@ from fastapi import (
     Query,
 )
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from sqlalchemy.orm import Session
 from sqlalchemy import extract, func
 from sqlalchemy.exc import IntegrityError
@@ -229,7 +230,9 @@ async def upload_statement(
             status_code=409, detail="This statement has already been uploaded"
         )
     try:
-        transactions_data = parser.parse_file(content, filename, account_type)
+        transactions_data = await run_in_threadpool(
+            parser.parse_file, content, filename, account_type
+        )
 
         if not transactions_data:
             raise HTTPException(status_code=400, detail="No transactions found in file")

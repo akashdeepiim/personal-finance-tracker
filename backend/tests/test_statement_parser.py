@@ -180,6 +180,68 @@ def test_pdf_does_not_invent_a_year_for_yearless_dates():
     assert transactions == []
 
 
+def _ocr_line(text, x, y, width=80):
+    return {
+        "x0": x,
+        "y0": y,
+        "x1": x + width,
+        "y1": y + 12,
+        "text": text,
+        "confidence": 0.99,
+    }
+
+
+def _synthetic_ocr_statement(final_balance="1,150.00"):
+    return [
+        [
+            _ocr_line("Date", 50, 100, 40),
+            _ocr_line("Transaction Details", 160, 100, 150),
+            _ocr_line("Deposits", 550, 100, 80),
+            _ocr_line("Withdrawals", 680, 100, 100),
+            _ocr_line("Balance", 840, 100, 80),
+            _ocr_line("Balance Brought Forward", 160, 130, 180),
+            _ocr_line("1,000.00", 840, 130, 80),
+            _ocr_line("01Jun2026", 50, 150, 90),
+            _ocr_line("UPI202606010001", 160, 150, 150),
+            _ocr_line("Coffee Shop", 160, 180, 100),
+            _ocr_line("100.00", 700, 180, 60),
+            _ocr_line("900.00", 850, 180, 60),
+            _ocr_line("ACH Credit INM", 160, 210, 130),
+            _ocr_line("Employer", 160, 230, 80),
+            _ocr_line("250.00", 570, 230, 60),
+            _ocr_line(final_balance, 840, 230, 80),
+            _ocr_line("Closing Balance", 160, 250, 120),
+            _ocr_line(final_balance, 840, 250, 80),
+            _ocr_line("Transaction Turnover", 160, 270, 150),
+            _ocr_line("250.00", 570, 270, 60),
+            _ocr_line("100.00", 700, 270, 60),
+            _ocr_line("Transaction Count", 160, 290, 130),
+            _ocr_line("1", 580, 290, 10),
+            _ocr_line("1", 720, 290, 10),
+        ]
+    ]
+
+
+def test_positioned_ocr_table_parses_and_validates_transactions():
+    transactions = StatementParser()._extract_transactions_from_ocr_pages(
+        _synthetic_ocr_statement(), "bank_account"
+    )
+    assert len(transactions) == 2
+    assert [item["amount"] for item in transactions] == [-100.0, 250.0]
+    assert [item["description"] for item in transactions] == [
+        "Coffee Shop",
+        "ACH Credit INM | Employer",
+    ]
+    assert [item["currency"] for item in transactions] == ["USD", "USD"]
+
+
+def test_positioned_ocr_table_rejects_balance_mismatch():
+    with pytest.raises(ValueError, match="OCR balance validation failed"):
+        StatementParser()._extract_transactions_from_ocr_pages(
+            _synthetic_ocr_statement(final_balance="1,149.00"), "bank_account"
+        )
+
+
 def test_currency_codes_require_word_boundaries():
     parser = StatementParser()
     assert parser._extract_currency("AUDIBLE.COM 12.50") is None

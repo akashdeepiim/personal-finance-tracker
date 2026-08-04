@@ -1,5 +1,6 @@
 import re
 import csv
+import threading
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import pandas as pd
@@ -13,6 +14,8 @@ class StatementParser:
     """Parse bank and credit card statements from PDF and CSV files"""
 
     def __init__(self):
+        self._ocr_engine = None
+        self._ocr_lock = threading.Lock()
         self.date_patterns = [
             r"\b\d{4}[./-]\d{1,2}[./-]\d{1,2}\b",
             r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b",
@@ -532,10 +535,322 @@ class StatementParser:
             text = ""
             for page in reader.pages:
                 text += (page.extract_text() or "") + "\n"
-
-            return self._extract_transactions_from_text(text, account_type)
+            if text.strip():
+                return self._extract_transactions_from_text(text, account_type)
+            return self._extract_transactions_with_ocr(content, account_type)
         except Exception as exc:
+            if isinstance(exc, ValueError):
+                raise
             raise ValueError("Unable to extract text from PDF statement") from exc
+
+    def _extract_transactions_with_ocr(
+        self, content: bytes, account_type: str
+    ) -> List[Dict]:
+        """OCR image-only PDFs and preserve table coordinates for safe parsing."""
+        try:
+            import numpy as np
+            import pypdfium2 as pdfium
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError as exc:
+            raise ValueError(
+                "This PDF contains no searchable text and OCR support is unavailable"
+            ) from exc
+
+        document = pdfium.PdfDocument(content)
+        if len(document) > 30:
+            raise ValueError("Image-only PDF statements are limited to 30 pages")
+
+        pages = []
+        with self._ocr_lock:
+            if self._ocr_engine is None:
+                self._ocr_engine = RapidOCR()
+            for page_number in range(len(document)):
+                page = document[page_number]
+                bitmap = page.render(scale=120 / 72)
+                image = np.asarray(bitmap.to_pil().convert("RGB"))
+                result, _ = self._ocr_engine(image)
+                lines = []
+                for box, text, confidence in result or []:
+                    if confidence < 0.55 or not str(text).strip():
+                        continue
+                    lines.append(
+                        {
+                            "x0": min(point[0] for point in box),
+                            "y0": min(point[1] for point in box),
+                            "x1": max(point[0] for point in box),
+                            "y1": max(point[1] for point in box),
+                            "text": str(text).strip(),
+                            "confidence": float(confidence),
+                        }
+                    )
+                pages.append(lines)
+                page.close()
+        document.close()
+        return self._extract_transactions_from_ocr_pages(pages, account_type)
+
+    def _extract_transactions_from_ocr_pages(
+        self, pages: List[List[Dict]], account_type: str
+    ) -> List[Dict]:
+        """Parse deposit/withdrawal/balance tables from positioned OCR text."""
+        transactions = []
+        current_date = None
+        current_balance = None
+        pending_details: List[str] = []
+        currency = (
+            self._extract_currency(
+                " ".join(item["text"] for page in pages for item in page)
+            )
+            or "USD"
+        )
+        deposit_total = 0.0
+        withdrawal_total = 0.0
+        reported_totals = None
+
+        for lines in pages:
+            header = self._ocr_table_header(lines)
+            if not header:
+                continue
+            header_y, date_x, details_x, deposit_x, withdrawal_x, balance_x = header
+            table_lines = [item for item in lines if item["y0"] > header_y + 8]
+            clusters = self._cluster_ocr_rows(table_lines)
+            deposit_boundary = (deposit_x + withdrawal_x) / 2
+            withdrawal_boundary = (withdrawal_x + balance_x) / 2
+            amount_start = deposit_x - 85
+            details_start = (date_x + details_x) / 2
+
+            for cluster in clusters:
+                normalized_text = " ".join(
+                    self._normalize_ocr_text(item["text"]) for item in cluster
+                )
+                if "transactionturnover" in normalized_text:
+                    amounts = self._ocr_cluster_amounts(
+                        cluster,
+                        amount_start,
+                        deposit_boundary,
+                        withdrawal_boundary,
+                    )
+                    if amounts.get("deposit") and amounts.get("withdrawal"):
+                        reported_totals = (
+                            amounts["deposit"],
+                            amounts["withdrawal"],
+                        )
+                    continue
+                if "transactioncount" in normalized_text:
+                    continue
+                if "closingbalance" in normalized_text:
+                    pending_details = []
+                    continue
+
+                for item in cluster:
+                    parsed_date = self._parse_ocr_date(item["text"])
+                    if parsed_date:
+                        current_date = parsed_date
+                        break
+
+                details = [
+                    item["text"]
+                    for item in cluster
+                    if item["x0"] >= details_start
+                    and item["x0"] < amount_start
+                    and not self._parse_ocr_date(item["text"])
+                ]
+                pending_details.extend(details)
+                amounts = self._ocr_cluster_amounts(
+                    cluster,
+                    amount_start,
+                    deposit_boundary,
+                    withdrawal_boundary,
+                )
+                transaction_amount = amounts.get("deposit") or amounts.get("withdrawal")
+                balance = amounts.get("balance")
+
+                if not transaction_amount:
+                    if balance is not None and (
+                        "balancebroughtforward" in normalized_text
+                        or "balancecarriedforward" in normalized_text
+                    ):
+                        current_balance = balance
+                        pending_details = []
+                    continue
+                if current_date is None:
+                    raise ValueError(
+                        "OCR transaction found before its transaction date"
+                    )
+                if balance is None:
+                    raise ValueError(
+                        f"OCR could not verify the balance for {current_date.date()}"
+                    )
+
+                explicit_type = "credit" if amounts.get("deposit") else "debit"
+                signed_amount = (
+                    abs(transaction_amount)
+                    if explicit_type == "credit"
+                    else -abs(transaction_amount)
+                )
+                if account_type == "credit_card":
+                    signed_amount = -signed_amount
+                if current_balance is not None:
+                    expected_balance = current_balance + signed_amount
+                    if abs(expected_balance - balance) > 0.02:
+                        raise ValueError(
+                            "OCR balance validation failed; refusing a partial or "
+                            f"incorrect import near {current_date.date()}"
+                        )
+
+                description = self._clean_ocr_transaction_description(pending_details)
+                if not description:
+                    raise ValueError(
+                        f"OCR could not read a description for {current_date.date()}"
+                    )
+                transaction = self._build_transaction(
+                    current_date,
+                    signed_amount,
+                    currency,
+                    description,
+                    account_type,
+                    explicit_type,
+                )
+                if transaction:
+                    transactions.append(transaction)
+                current_balance = balance
+                if explicit_type == "credit":
+                    deposit_total += transaction_amount
+                else:
+                    withdrawal_total += transaction_amount
+                pending_details = []
+
+        if reported_totals and (
+            abs(deposit_total - reported_totals[0]) > 0.02
+            or abs(withdrawal_total - reported_totals[1]) > 0.02
+        ):
+            raise ValueError(
+                "OCR transaction totals do not match the statement; refusing import"
+            )
+        return transactions
+
+    def _ocr_table_header(self, lines: List[Dict]):
+        candidates = {}
+        for item in lines:
+            normalized = self._normalize_ocr_text(item["text"])
+            role = None
+            if normalized == "date":
+                role = "date"
+            elif normalized.startswith("transactiondetail"):
+                role = "details"
+            elif normalized.startswith("deposit"):
+                role = "deposit"
+            elif normalized.startswith("withdraw"):
+                role = "withdrawal"
+            elif normalized == "balance":
+                role = "balance"
+            if role:
+                candidates.setdefault(role, []).append(item)
+        required = {"date", "details", "deposit", "withdrawal", "balance"}
+        if not required.issubset(candidates):
+            return None
+        for date_item in candidates["date"]:
+            selected = {"date": date_item}
+            for role in required - {"date"}:
+                nearby = min(
+                    candidates[role],
+                    key=lambda item: abs(item["y0"] - date_item["y0"]),
+                )
+                if abs(nearby["y0"] - date_item["y0"]) > 30:
+                    break
+                selected[role] = nearby
+            if required.issubset(selected):
+
+                def center(item):
+                    return (item["x0"] + item["x1"]) / 2
+
+                return (
+                    max(item["y1"] for item in selected.values()),
+                    center(selected["date"]),
+                    center(selected["details"]),
+                    center(selected["deposit"]),
+                    center(selected["withdrawal"]),
+                    center(selected["balance"]),
+                )
+        return None
+
+    @staticmethod
+    def _cluster_ocr_rows(lines: List[Dict]) -> List[List[Dict]]:
+        clusters: List[List[Dict]] = []
+        for item in sorted(lines, key=lambda value: (value["y0"], value["x0"])):
+            if (
+                not clusters
+                or item["y0"] - min(member["y0"] for member in clusters[-1]) > 6
+            ):
+                clusters.append([item])
+            else:
+                clusters[-1].append(item)
+        return [sorted(cluster, key=lambda value: value["x0"]) for cluster in clusters]
+
+    def _ocr_cluster_amounts(
+        self,
+        cluster: List[Dict],
+        amount_start: float,
+        deposit_boundary: float,
+        withdrawal_boundary: float,
+    ) -> Dict[str, float]:
+        amounts = {}
+        for item in cluster:
+            center = (item["x0"] + item["x1"]) / 2
+            if center < amount_start:
+                continue
+            try:
+                amount = self._extract_amount(item["text"])
+            except ValueError:
+                continue
+            if center < deposit_boundary:
+                role = "deposit"
+            elif center < withdrawal_boundary:
+                role = "withdrawal"
+            else:
+                role = "balance"
+            amounts[role] = amount
+        return amounts
+
+    def _parse_ocr_date(self, value: str) -> Optional[datetime]:
+        compact = re.sub(r"[^A-Za-z0-9]", "", value)
+        if not re.fullmatch(r"\d{1,2}[A-Za-z]{3,9}\d{2,4}", compact):
+            return None
+        for fmt in ("%d%b%Y", "%d%B%Y", "%d%b%y", "%d%B%y"):
+            try:
+                return datetime.strptime(compact, fmt)
+            except ValueError:
+                pass
+        return None
+
+    @staticmethod
+    def _normalize_ocr_text(value: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+    def _clean_ocr_transaction_description(self, values: List[str]) -> str:
+        descriptions = []
+        ignored = {
+            "balancebroughtforward",
+            "balancecarriedforward",
+            "closingbalance",
+        }
+        for value in values:
+            cleaned = re.sub(r"\s+", " ", value).strip(" -|:,")
+            normalized = self._normalize_ocr_text(cleaned)
+            if (
+                not cleaned
+                or normalized in ignored
+                or not re.search(r"[A-Za-z]", cleaned)
+            ):
+                continue
+            if re.fullmatch(r"\d{6,}", normalized):
+                continue
+            if re.match(
+                r"^(?:upi|hsbcn|axispo|axodh|utibn|idfb|barb|hdfc)\w*\d",
+                normalized,
+            ):
+                continue
+            descriptions.append(cleaned)
+        return " | ".join(descriptions)
 
     def _extract_transactions_from_text(
         self, text: str, account_type: str
