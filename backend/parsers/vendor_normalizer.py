@@ -14,36 +14,36 @@ class VendorNormalizer:
     # Common transaction prefixes to strip
     TRANSACTION_PREFIXES = [
         # Card network prefixes
-        r"^VISA\s*\*?\s*",
-        r"^MC\s*\*?\s*",
-        r"^MASTERCARD\s*\*?\s*",
-        r"^AMEX\s*\*?\s*",
-        r"^DISCOVER\s*\*?\s*",
-        r"^RUPAY\s*\*?\s*",
+        r"^VISA(?=\s|\*|$)\s*\*?\s*",
+        r"^MC(?=\s|\*|$)\s*\*?\s*",
+        r"^MASTERCARD(?=\s|\*|$)\s*\*?\s*",
+        r"^AMEX(?=\s|\*|$)\s*\*?\s*",
+        r"^DISCOVER(?=\s|\*|$)\s*\*?\s*",
+        r"^RUPAY(?=\s|\*|$)\s*\*?\s*",
         # Payment processor prefixes
-        r"^SQ\s*\*?\s*",  # Square
-        r"^SQUARE\s*\*?\s*",
-        r"^PAYPAL\s*\*?\s*",
-        r"^PP\s*\*?\s*",
-        r"^STRIPE\s*\*?\s*",
-        r"^RAZORPAY\s*\*?\s*",
-        r"^PAYTM\s*\*?\s*",
-        r"^GPAY\s*\*?\s*",
-        r"^PHONEPE\s*\*?\s*",
+        r"^SQ(?=\s|\*|$)\s*\*?\s*",  # Square
+        r"^SQUARE(?=\s|\*|$)\s*\*?\s*",
+        r"^PAYPAL(?=\s|\*|$)\s*\*?\s*",
+        r"^PP(?=\s|\*|$)\s*\*?\s*",
+        r"^STRIPE(?=\s|\*|$)\s*\*?\s*",
+        r"^RAZORPAY(?=\s|\*|$)\s*\*?\s*",
+        r"^PAYTM(?=\s|\*|$)\s*\*?\s*",
+        r"^GPAY(?=\s|\*|$)\s*\*?\s*",
+        r"^PHONEPE(?=\s|\*|$)\s*\*?\s*",
         # E-commerce prefixes
-        r"^AMZN\s*(?:MKTP|Mktp)?\s*(?:US|IN|UK)?\s*\*?\s*",
-        r"^AMAZON\s*(?:PRIME|MKTP)?\s*\*?\s*",
-        r"^FLIPKART\s*\*?\s*",
+        r"^AMZN(?=\s|\*|$)\s*(?:MKTP|Mktp)?\s*(?:US|IN|UK)?\s*\*?\s*",
+        r"^AMAZON(?=\s|\*|$)\s*(?:PRIME|MKTP)?\s*\*?\s*",
+        r"^FLIPKART(?=\s|\*|$)\s*\*?\s*",
         # Subscription prefixes
-        r"^GOOGLE\s*\*?\s*",
+        r"^GOOGLE(?=\s|\*|$)\s*\*?\s*",
         r"^APPLE\.COM\s*",
-        r"^APPLE\s*\*?\s*",
+        r"^APPLE(?=\s|\*|$)\s*\*?\s*",
         # Other common prefixes
-        r"^POS\s*(?:TXN|PURCHASE)?\s*",
+        r"^POS(?=\s|\*|$)\s*(?:TXN|PURCHASE)?\s*",
         r"^DEBIT\s*CARD\s*",
         r"^CREDIT\s*CARD\s*",
-        r"^IB\s*",  # Internet banking
-        r"^MB\s*",  # Mobile banking
+        r"^IB(?=\s|\*|$)\s*",  # Internet banking
+        r"^MB(?=\s|\*|$)\s*",  # Mobile banking
     ]
 
     # Suffixes to strip (reference numbers, dates, locations)
@@ -52,7 +52,6 @@ class VendorNormalizer:
         r"\s*-?\d{6,}$",  # Account/reference numbers
         r"\s*\*?\d{4}$",  # Card last 4 digits
         r"\s*\d{2}[/-]\d{2}[/-]\d{2,4}$",  # Dates
-        r"\s*[A-Z]{2,3}\s*$",  # State/country codes
         r"\s*\d{5,6}$",  # Zip codes
         r"\s*\*+$",  # Trailing asterisks
     ]
@@ -81,12 +80,12 @@ class VendorNormalizer:
             "chargeback",
         ],
         "credit": [
-            "credit",
-            "cr",
             "deposit",
             "salary",
             "payroll",
             "direct dep",
+            "interest earned",
+            "interest credit",
         ],
         "transfer": [
             "transfer",
@@ -101,7 +100,8 @@ class VendorNormalizer:
         "fee": [
             "fee",
             "charge",
-            "interest",
+            "interest charged",
+            "interest charge",
             "service chg",
             "annual fee",
             "late fee",
@@ -144,13 +144,8 @@ class VendorNormalizer:
         "cif",
         "account holder",
         # Interest and charges summaries
-        "interest earned",
-        "interest paid",
         "total charges",
         "charges debited",
-        "tax deducted",
-        "tds",
-        "gst",
         # Misc non-transactions
         "passbook",
         "cheque book",
@@ -227,8 +222,10 @@ class VendorNormalizer:
         vendor_lower = cleaned.lower()
 
         # Check for known aliases
-        for alias, normalized in self.VENDOR_ALIASES.items():
-            if alias in vendor_lower:
+        for alias, normalized in sorted(
+            self.VENDOR_ALIASES.items(), key=lambda item: len(item[0]), reverse=True
+        ):
+            if self._contains_keyword(vendor_lower, alias):
                 return normalized
 
         # Return first 2-3 meaningful words as vendor name
@@ -261,9 +258,36 @@ class VendorNormalizer:
         if len(desc_lower) < 3:
             return True
 
-        # Check against ignore patterns
+        # Check against ignore patterns. Summary/header text often has a value
+        # appended after PDF extraction, so selected patterns are prefix matches.
+        prefix_patterns = {
+            "subtotal",
+            "grand total",
+            "statement summary",
+            "account summary",
+            "page no",
+            "statement period",
+            "account number",
+            "account no",
+            "available balance",
+            "minimum balance",
+            "average balance",
+            "balance brought forward",
+            "balance carried forward",
+            "total charges",
+            "charges debited",
+        }
+        if re.match(
+            r"^(?:grand\s+|sub\s+)?total\s+"
+            r"(?:purchases?|payments?|debits?|credits?|fees?|charges?|withdrawals?|"
+            r"deposits?|transactions?|spend(?:ing)?|amount|due)\b",
+            desc_lower,
+        ) or re.match(r"^page(?:\s+no\.?)?\s+\d+\b", desc_lower):
+            return True
         for pattern in self.IGNORE_PATTERNS:
-            if desc_lower == pattern:
+            if desc_lower == pattern or (
+                pattern in prefix_patterns and desc_lower.startswith(pattern + " ")
+            ):
                 return True
 
         # Ignore if description is mostly numbers
@@ -311,10 +335,22 @@ class VendorNormalizer:
         )
         explicit_card_payment = any(
             phrase in desc_lower
-            for phrase in ("credit card payment", "card payment", "payment thank you")
+            for phrase in (
+                "credit card payment",
+                "card payment",
+                "payment thank you",
+                "payment received",
+                "online payment",
+                "automatic payment",
+                "autopay payment",
+            )
         )
-        if payment_match and (account_type == "credit_card" or explicit_card_payment):
+        if payment_match and explicit_card_payment:
             return "transfer"
+
+        for keyword in self.TRANSACTION_TYPE_KEYWORDS["transfer"]:
+            if self._contains_keyword(desc_lower, keyword):
+                return "transfer"
 
         # Check for explicit income keywords
         for keyword in self.TRANSACTION_TYPE_KEYWORDS["credit"]:
