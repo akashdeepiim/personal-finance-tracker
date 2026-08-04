@@ -156,7 +156,8 @@ class StatementParser:
                         )
                         transaction_type = (
                             detected_type
-                            if detected_type in {"refund", "transfer", "balance", "ignore"}
+                            if detected_type
+                            in {"refund", "transfer", "balance", "ignore"}
                             else explicit_type or detected_type
                         )
                         subtype = vendor_normalizer.get_transaction_subtype(description)

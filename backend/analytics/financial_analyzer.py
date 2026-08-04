@@ -215,17 +215,25 @@ class FinancialAnalyzer:
             "count": len(selected),
             "total": round(selected_total, 2),
             "percentage": round(percentage, 2),
-            "risk_level": "high" if percentage > 50 else "medium" if percentage > 30 else "low",
+            "risk_level": "high"
+            if percentage > 50
+            else "medium"
+            if percentage > 30
+            else "low",
         }
 
     def _analyze_habits(self, transactions: List[Dict]) -> List[str]:
         observations = []
-        subscriptions = [t for t in transactions if t.get("category") == "Subscriptions"]
+        subscriptions = [
+            t for t in transactions if t.get("category") == "Subscriptions"
+        ]
         if subscriptions:
             observations.append(f"{len(subscriptions)} subscription charge(s) recorded")
         dining = [t for t in transactions if t.get("category") == "Food & Dining"]
         if dining:
-            observations.append(f"{len(dining)} food and dining transaction(s) recorded")
+            observations.append(
+                f"{len(dining)} food and dining transaction(s) recorded"
+            )
         return observations or ["No repeated category patterns detected"]
 
     def _identify_risk_factors(self, category_breakdown: Dict) -> List[str]:

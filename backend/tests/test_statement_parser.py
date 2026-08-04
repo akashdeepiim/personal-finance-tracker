@@ -23,8 +23,7 @@ def test_separate_debit_and_credit_columns_are_supported():
 
 def test_card_payment_and_refund_are_not_parsed_as_income():
     bank_content = (
-        b"Date,Description,Debit,Credit\n"
-        b"2024-01-02,Credit Card Payment,100.00,\n"
+        b"Date,Description,Debit,Credit\n2024-01-02,Credit Card Payment,100.00,\n"
     )
     card_content = (
         b"Date,Description,Amount\n"

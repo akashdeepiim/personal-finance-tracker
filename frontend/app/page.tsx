@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import dynamic from 'next/dynamic'
 import { motion } from 'framer-motion'
 import CurrencySelector from '@/components/CurrencySelector'
@@ -18,6 +18,20 @@ export default function Home() {
   const [activeTab, setActiveTab] = useState('dashboard')
   const [refreshKey, setRefreshKey] = useState(0)
   const [selectedCurrency, setSelectedCurrency] = useState('INR')
+  const [accountEmail, setAccountEmail] = useState('')
+
+  useEffect(() => {
+    fetch('/api/auth/me')
+      .then(async (response) => {
+        if (!response.ok) {
+          window.location.assign('/login')
+          return
+        }
+        const user = await response.json() as { email: string }
+        setAccountEmail(user.email)
+      })
+      .catch(() => window.location.assign('/login'))
+  }, [])
 
   const tabs = [
     { id: 'dashboard', label: 'Dashboard', icon: Wallet },
@@ -54,6 +68,7 @@ export default function Home() {
             <p className="text-gray-600 mt-1">Track, Analyze, and Optimize Your Spending</p>
           </div>
           <div className="flex items-center gap-2">
+            {accountEmail && <span className="hidden max-w-48 truncate text-sm text-gray-600 md:block" title={accountEmail}>{accountEmail}</span>}
             <CurrencySelector selectedCurrency={selectedCurrency} onCurrencyChange={setSelectedCurrency} />
             <button onClick={handleLogout} title="Sign out" className="rounded-lg border bg-white p-2 text-gray-600 shadow-md hover:text-red-600">
               <LogOut size={20} />

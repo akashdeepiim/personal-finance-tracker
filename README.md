@@ -9,12 +9,13 @@ A comprehensive personal finance tracking application that analyzes your spendin
 - 🧠 **Spending Behavior Profile**: Explore rule-based spending patterns
 - 📄 **Statement Parsing**: Automatically parse credit card and bank statements (PDF/CSV)
 - 📈 **Trend Analysis**: Visualize spending trends over time
-- 💾 **Local Storage**: All data stored locally for privacy
+- 👤 **Private Accounts**: Individual signup/login with isolated financial data
+- 💾 **Local Storage**: Financial data stays in your configured database
 - 🎨 **Beautiful UI**: Modern, animated interface with charts and visualizations
 
 ## Tech Stack
 
-- **Frontend**: Next.js 14, React, Tailwind CSS, Framer Motion, Recharts
+- **Frontend**: Next.js 15, React, Tailwind CSS, Framer Motion, Recharts
 - **Backend**: Python, FastAPI, SQLAlchemy, SQLite
 - **Parsing**: PyPDF2, pandas for statement processing
 
@@ -52,8 +53,7 @@ ENVIRONMENT=production FINANCE_API_TOKEN='replace-with-a-long-random-value' uvic
 # Next.js (never prefix these variables with NEXT_PUBLIC_)
 ENVIRONMENT=production BACKEND_API_URL='http://localhost:8000' \
 FINANCE_API_TOKEN='replace-with-the-same-value' \
-FINANCE_APP_PASSWORD='your-private-login-password' \
-FINANCE_SESSION_SECRET='a-separate-long-random-value' npm start
+npm start
 ```
 
 The Next.js server proxies browser requests to FastAPI, so the token is not shipped in client JavaScript. You may also set `MAX_UPLOAD_BYTES` and `ALLOWED_ORIGINS` on the backend.
@@ -70,11 +70,11 @@ The frontend will run on `http://localhost:3000`
 
 ### First Time Usage
 
-1. Open `http://localhost:3000` in your browser
-2. Click on the "Upload" tab
+1. Open `http://localhost:3000` and create an account
+2. Sign in and open the "Upload" tab
 3. Upload a CSV or PDF statement file
-4. View your dashboard with categorized expenses
-5. Explore insights, trends, and your psychological profile
+4. View your private dashboard with categorized expenses
+5. Explore insights, trends, and spending patterns
 
 ## Features in Detail
 
@@ -102,12 +102,10 @@ The frontend will run on `http://localhost:3000`
 - Average, highest, and lowest month statistics
 - Visual trend indicators
 
-### 🧠 Spending Behavior Profile
-- Spending personality analysis
-- Impulse spending indicators
-- Financial habits identification
-- Risk factors and strengths assessment
-- Personalized insights and recommendations
+### 🧠 Spending Patterns
+- Neutral, rule-based observations from recent expenses
+- Discretionary category share and category concentrations
+- Explicit limitations instead of psychological claims
 
 ## Sample Data
 
@@ -116,9 +114,12 @@ A sample CSV file (`sample_data.csv`) is included for testing. You can upload it
 ## Data Privacy
 
 - Data is stored in the configured SQLite database by default (or PostgreSQL when `DATABASE_URL` is set)
+- Every statement, transaction, analysis period, and learned category rule is owned by one account
+- Passwords are salted and hashed with scrypt; revocable session tokens are hashed in the database and stored in an HttpOnly, same-site browser cookie
+- When upgrading an existing single-user installation, the first account created claims legacy data; later accounts start empty
 - Transaction data is not sent to external servers; the backend fetches public exchange rates
 - Analyses are calculated from local transactions on demand
-- Production access is protected by the configured password, session secret, and backend token
+- In production, keep FastAPI private and configure the same `FINANCE_API_TOKEN` on FastAPI and Next.js
 
 ## Verification
 

@@ -1,4 +1,5 @@
-import { NextRequest } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server'
+import { SESSION_COOKIE, sessionCookieOptions } from '@/lib/auth'
 
 const BACKEND_URL = process.env.BACKEND_API_URL || 'http://localhost:8000'
 const API_TOKEN = process.env.FINANCE_API_TOKEN
@@ -12,6 +13,8 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
   const contentType = request.headers.get('content-type')
   if (contentType) headers.set('content-type', contentType)
   if (API_TOKEN) headers.set('authorization', `Bearer ${API_TOKEN}`)
+  const sessionToken = request.cookies.get(SESSION_COOKIE)?.value
+  if (sessionToken) headers.set('x-session-token', sessionToken)
 
   const response = await fetch(target, {
     method: request.method,
@@ -20,10 +23,14 @@ async function proxy(request: NextRequest, context: { params: Promise<{ path: st
     cache: 'no-store',
   })
 
-  return new Response(response.body, {
+  const outgoing = new NextResponse(response.body, {
     status: response.status,
     headers: { 'content-type': response.headers.get('content-type') || 'application/json' },
   })
+  if (response.status === 401) {
+    outgoing.cookies.set(SESSION_COOKIE, '', { ...sessionCookieOptions, maxAge: 0 })
+  }
+  return outgoing
 }
 
 export const GET = proxy

@@ -36,7 +36,10 @@ class CategoryLearner:
             # Check if we already have a learning rule for this pattern
             existing = (
                 db.query(CategoryLearning)
-                .filter(CategoryLearning.vendor_pattern.like(f"%{escaped_pattern}%"))
+                .filter(
+                    CategoryLearning.user_id == transaction.user_id,
+                    CategoryLearning.vendor_pattern.like(f"%{escaped_pattern}%"),
+                )
                 .first()
             )
 
@@ -57,6 +60,7 @@ class CategoryLearner:
             else:
                 # Create new learning rule
                 learning_rule = CategoryLearning(
+                    user_id=transaction.user_id,
                     vendor_pattern=vendor_pattern,
                     description_pattern=description[:50],
                     category=transaction.category or "Other",
@@ -103,7 +107,10 @@ class CategoryLearner:
             first_token = vendor.split()[0].replace("%", "\\%").replace("_", "\\_")
             all_transactions = (
                 db.query(Transaction)
-                .filter(Transaction.description.ilike(f"%{first_token}%", escape="\\"))
+                .filter(
+                    Transaction.user_id == transaction.user_id,
+                    Transaction.description.ilike(f"%{first_token}%", escape="\\"),
+                )
                 .all()
             )
             updated_count = 0
@@ -143,7 +150,12 @@ class CategoryLearner:
             raise RuntimeError("Unable to update matching transactions") from e
 
     def suggest_category(
-        self, db: Session, description: str, amount: float, account_type: str
+        self,
+        db: Session,
+        user_id: int,
+        description: str,
+        amount: float,
+        account_type: str,
     ) -> Optional[Dict]:
         """Suggest category based on learned patterns"""
         description_lower = description.lower()
@@ -156,7 +168,8 @@ class CategoryLearner:
             matches = (
                 db.query(CategoryLearning)
                 .filter(
-                    CategoryLearning.vendor_pattern.ilike(f"%{escaped}%", escape="\\")
+                    CategoryLearning.user_id == user_id,
+                    CategoryLearning.vendor_pattern.ilike(f"%{escaped}%", escape="\\"),
                 )
                 .limit(25)
                 .all()
@@ -177,10 +190,11 @@ class CategoryLearner:
             }
         return None
 
-    def get_learning_rules(self, db: Session, limit: int = 200) -> list:
+    def get_learning_rules(self, db: Session, user_id: int, limit: int = 200) -> list:
         """Get all learning rules"""
         rules = (
             db.query(CategoryLearning)
+            .filter(CategoryLearning.user_id == user_id)
             .order_by(
                 CategoryLearning.usage_count.desc(), CategoryLearning.confidence.desc()
             )

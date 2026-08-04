@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { constantTimeEqual } from './auth'
+import { SESSION_COOKIE, sessionCookieOptions } from './auth'
 
-describe('session comparison', () => {
-  it('accepts equal values and rejects unequal values', () => {
-    expect(constantTimeEqual('abc', 'abc')).toBe(true)
-    expect(constantTimeEqual('abc', 'abd')).toBe(false)
-    expect(constantTimeEqual('abc', 'ab')).toBe(false)
+describe('session cookie configuration', () => {
+  it('uses a private strict same-site cookie', () => {
+    expect(SESSION_COOKIE).toBe('finance_session')
+    expect(sessionCookieOptions.httpOnly).toBe(true)
+    expect(sessionCookieOptions.sameSite).toBe('strict')
+    expect(sessionCookieOptions.path).toBe('/')
   })
 })

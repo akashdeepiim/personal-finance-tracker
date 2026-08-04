@@ -1,14 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { SESSION_COOKIE, validSession } from '@/lib/auth'
+import { SESSION_COOKIE } from '@/lib/auth'
 
-export async function middleware(request: NextRequest) {
-  if (await validSession(request.cookies.get(SESSION_COOKIE)?.value)) return NextResponse.next()
+export function middleware(request: NextRequest) {
+  if (request.cookies.get(SESSION_COOKIE)?.value) return NextResponse.next()
   if (request.nextUrl.pathname.startsWith('/api/')) {
     return NextResponse.json({ detail: 'Authentication required' }, { status: 401 })
   }
-  return NextResponse.redirect(new URL('/login', request.url))
+  const loginUrl = new URL('/login', request.url)
+  loginUrl.searchParams.set('next', request.nextUrl.pathname)
+  return NextResponse.redirect(loginUrl)
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|login|api/auth).*)'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|login|signup|api/auth).*)'],
 }

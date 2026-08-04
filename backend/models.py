@@ -14,10 +14,58 @@ from datetime import datetime, timezone
 from database import Base
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    email = Column(String(320), nullable=False, unique=True, index=True)
+    password_hash = Column(String(512), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    sessions = relationship(
+        "UserSession", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class UserSession(Base):
+    __tablename__ = "user_sessions"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    user = relationship("User", back_populates="sessions")
+
+
+class LoginThrottle(Base):
+    __tablename__ = "login_throttles"
+
+    id = Column(Integer, primary_key=True)
+    identifier_hash = Column(String(64), nullable=False, unique=True, index=True)
+    failure_count = Column(Integer, default=0, nullable=False)
+    window_started_at = Column(DateTime(timezone=True), nullable=False)
+    locked_until = Column(DateTime(timezone=True), nullable=True)
+
+
 class Transaction(Base):
     __tablename__ = "transactions"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     date = Column(DateTime, nullable=False)
     amount = Column(Numeric(18, 2), nullable=False)
     original_amount = Column(
@@ -42,10 +90,18 @@ class Transaction(Base):
 class Statement(Base):
     __tablename__ = "statements"
     __table_args__ = (
-        UniqueConstraint("account_type", "file_hash", name="uq_statement_account_hash"),
+        UniqueConstraint(
+            "user_id",
+            "account_type",
+            "file_hash",
+            name="uq_user_statement_account_hash",
+        ),
     )
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     filename = Column(String(255), nullable=False)
     account_type = Column(String, nullable=False)
     currency = Column(
@@ -67,9 +123,16 @@ class Analysis(Base):
     __tablename__ = "analyses"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     month = Column(Integer, nullable=False)
     year = Column(Integer, nullable=False)
-    __table_args__ = (UniqueConstraint("year", "month", name="uq_analysis_year_month"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "year", "month", name="uq_user_analysis_year_month"
+        ),
+    )
 
     total_spending = Column(Numeric(18, 2), nullable=False)
     total_income = Column(Numeric(18, 2), default=0, nullable=False)
@@ -85,6 +148,9 @@ class CategoryLearning(Base):
     __tablename__ = "category_learning"
 
     id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
     vendor_pattern = Column(String, nullable=False)  # Vendor/merchant name pattern
     description_pattern = Column(String, nullable=True)  # Description pattern
     category = Column(String, nullable=False)

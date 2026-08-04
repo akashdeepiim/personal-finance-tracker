@@ -11,6 +11,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import extract, func
+from sqlalchemy.exc import IntegrityError
 from typing import Optional, Literal
 import os
 import secrets
@@ -18,14 +19,29 @@ import hashlib
 from datetime import timezone
 from pathlib import Path
 from collections import defaultdict
+from pydantic import BaseModel
 
 from database import get_db
-from models import Transaction, Statement, Analysis, CategoryLearning
+from models import Transaction, Statement, Analysis, CategoryLearning, User
 from parsers.statement_parser import StatementParser
 from analytics.financial_analyzer import FinancialAnalyzer
 from services.currency_converter import CurrencyConverter
 from services.category_learner import CategoryLearner
 from migrate_db import migrate_database
+from services.auth_service import (
+    claim_legacy_data,
+    create_session,
+    clear_login_failures,
+    DUMMY_PASSWORD_HASH,
+    hash_password,
+    normalize_email,
+    login_allowed,
+    record_login_failure,
+    revoke_session,
+    user_for_session,
+    validate_password,
+    verify_password,
+)
 
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
 API_TOKEN = os.getenv("FINANCE_API_TOKEN")
@@ -44,9 +60,7 @@ def require_api_token(authorization: Optional[str] = Header(default=None)):
 # Create database tables
 migrate_database()
 
-app = FastAPI(
-    title="Personal Finance Tracker API", dependencies=[Depends(require_api_token)]
-)
+app = FastAPI(title="Personal Finance Tracker API")
 
 
 # CORS middleware
@@ -82,9 +96,103 @@ def validated_currency(value: Optional[str]) -> str:
     return currency
 
 
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+
+
+def current_user(
+    x_session_token: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+) -> User:
+    require_api_token(authorization)
+    user = user_for_session(db, x_session_token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
 @app.get("/")
 def read_root():
     return {"message": "Personal Finance Tracker API"}
+
+
+@app.post("/api/auth/signup", status_code=201)
+def signup(
+    credentials: AuthRequest,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    require_api_token(authorization)
+    try:
+        email = normalize_email(credentials.email)
+        validate_password(credentials.password)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if db.query(User).filter(User.email == email).first():
+        raise HTTPException(
+            status_code=409, detail="An account with this email already exists"
+        )
+    is_first_user = db.query(User.id).first() is None
+    user = User(email=email, password_hash=hash_password(credentials.password))
+    db.add(user)
+    db.flush()
+    if is_first_user:
+        claim_legacy_data(db, user.id)
+    token = create_session(db, user)
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=409, detail="An account with this email already exists"
+        ) from exc
+    return {"token": token, "user": {"id": user.id, "email": user.email}}
+
+
+@app.post("/api/auth/login")
+def login(
+    credentials: AuthRequest,
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    require_api_token(authorization)
+    try:
+        email = normalize_email(credentials.email)
+    except ValueError:
+        email = ""
+    if not login_allowed(db, email):
+        raise HTTPException(
+            status_code=429, detail="Too many sign-in attempts. Try again later."
+        )
+    user = db.query(User).filter(User.email == email).first()
+    password_matches = verify_password(
+        credentials.password, user.password_hash if user else DUMMY_PASSWORD_HASH
+    )
+    if not user or not password_matches:
+        record_login_failure(db, email)
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    clear_login_failures(db, email)
+    token = create_session(db, user)
+    db.commit()
+    return {"token": token, "user": {"id": user.id, "email": user.email}}
+
+
+@app.post("/api/auth/logout")
+def logout(
+    x_session_token: Optional[str] = Header(default=None),
+    authorization: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    require_api_token(authorization)
+    revoke_session(db, x_session_token)
+    return {"ok": True}
+
+
+@app.get("/api/auth/me")
+def me(user: User = Depends(current_user)):
+    return {"id": user.id, "email": user.email}
 
 
 @app.post("/api/upload-statement")
@@ -92,6 +200,7 @@ async def upload_statement(
     file: UploadFile = File(...),
     account_type: Literal["credit_card", "bank_account"] = Form("credit_card"),
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """Upload and parse a statement file"""
     filename = Path(file.filename or "").name[:255]
@@ -105,11 +214,14 @@ async def upload_statement(
             status_code=413,
             detail=f"File exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit",
         )
-    file_hash = hashlib.sha256(content).hexdigest()
+    raw_file_hash = hashlib.sha256(content).hexdigest()
+    file_hash = hashlib.sha256(f"{user.id}:{raw_file_hash}".encode()).hexdigest()
     if (
         db.query(Statement)
         .filter(
-            Statement.account_type == account_type, Statement.file_hash == file_hash
+            Statement.account_type == account_type,
+            Statement.file_hash == file_hash,
+            Statement.user_id == user.id,
         )
         .first()
     ):
@@ -135,6 +247,7 @@ async def upload_statement(
 
         # Create statement record
         statement = Statement(
+            user_id=user.id,
             filename=filename,
             account_type=account_type,
             currency=statement_currency,
@@ -169,7 +282,7 @@ async def upload_statement(
                 transaction_type = "credit" if original_amount > 0 else "debit"
 
             suggestion = category_learner.suggest_category(
-                db, description, original_amount, account_type
+                db, user.id, description, original_amount, account_type
             )
 
             # Use suggested category if available, otherwise use parsed category
@@ -184,6 +297,7 @@ async def upload_statement(
             )
 
             transaction = Transaction(
+                user_id=user.id,
                 date=t_data["date"],
                 amount=amount_usd,  # Always store as positive, use transaction_type to differentiate
                 original_amount=abs(original_amount),
@@ -224,9 +338,10 @@ def get_categories(
     month: Optional[int] = Query(default=None, ge=1, le=12),
     year: Optional[int] = Query(default=None, ge=1900, le=2200),
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """Get spending breakdown by category"""
-    query = db.query(Transaction)
+    query = db.query(Transaction).filter(Transaction.user_id == user.id)
     if month is not None:
         query = query.filter(extract("month", Transaction.date) == month)
     if year is not None:
@@ -264,7 +379,11 @@ def get_categories(
 
 @app.get("/api/analysis/{year}/{month}")
 def get_analysis(
-    year: int, month: int, currency: str = "USD", db: Session = Depends(get_db)
+    year: int,
+    month: int,
+    currency: str = "USD",
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """Get or generate analysis for a specific month"""
     if not 1 <= month <= 12 or not 1900 <= year <= 2200:
@@ -275,6 +394,7 @@ def get_analysis(
     transactions = (
         db.query(Transaction)
         .filter(
+            Transaction.user_id == user.id,
             extract("month", Transaction.date) == month,
             extract("year", Transaction.date) == year,
         )
@@ -306,7 +426,9 @@ def get_analysis(
 
 
 @app.get("/api/analysis-periods")
-def get_analysis_periods(db: Session = Depends(get_db)):
+def get_analysis_periods(
+    db: Session = Depends(get_db), user: User = Depends(current_user)
+):
     """Return months that actually contain transactions, newest first."""
     rows = (
         db.query(
@@ -314,8 +436,12 @@ def get_analysis_periods(db: Session = Depends(get_db)):
             extract("month", Transaction.date),
             func.count(Transaction.id),
         )
+        .filter(Transaction.user_id == user.id)
         .group_by(extract("year", Transaction.date), extract("month", Transaction.date))
-        .order_by(extract("year", Transaction.date).desc(), extract("month", Transaction.date).desc())
+        .order_by(
+            extract("year", Transaction.date).desc(),
+            extract("month", Transaction.date).desc(),
+        )
         .all()
     )
     return {
@@ -331,16 +457,26 @@ def get_trends(
     months: int = Query(default=6, ge=1, le=60),
     currency: str = "USD",
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """Get spending trends over time"""
     target_currency = validated_currency(currency)
-    transactions = db.query(Transaction).order_by(Transaction.date).all()
+    transactions = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == user.id)
+        .order_by(Transaction.date)
+        .all()
+    )
     monthly = defaultdict(list)
     for transaction in transactions:
         monthly[transaction.date.strftime("%Y-%m")].append(
             {
                 "date": transaction.date,
-                "amount": float(currency_converter.convert(transaction.amount, "USD", target_currency)),
+                "amount": float(
+                    currency_converter.convert(
+                        transaction.amount, "USD", target_currency
+                    )
+                ),
                 "description": transaction.description,
                 "category": transaction.category,
                 "transaction_type": transaction.transaction_type,
@@ -364,10 +500,19 @@ def get_trends(
 
 
 @app.get("/api/psychological-profile")
-def get_psychological_profile(currency: str = "USD", db: Session = Depends(get_db)):
+def get_psychological_profile(
+    currency: str = "USD",
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
     """Get overall psychological financial profile"""
     target_currency = validated_currency(currency)
-    latest = db.query(Transaction.date).order_by(Transaction.date.desc()).first()
+    latest = (
+        db.query(Transaction.date)
+        .filter(Transaction.user_id == user.id)
+        .order_by(Transaction.date.desc())
+        .first()
+    )
     if not latest:
         return {"message": "Insufficient data"}
     from dateutil.relativedelta import relativedelta
@@ -375,7 +520,11 @@ def get_psychological_profile(currency: str = "USD", db: Session = Depends(get_d
     cutoff = latest[0] - relativedelta(months=3)
     recent_transactions = (
         db.query(Transaction)
-        .filter(Transaction.date >= cutoff, Transaction.transaction_type == "debit")
+        .filter(
+            Transaction.user_id == user.id,
+            Transaction.date >= cutoff,
+            Transaction.transaction_type == "debit",
+        )
         .order_by(Transaction.date.desc())
         .all()
     )
@@ -401,15 +550,25 @@ def get_psychological_profile(currency: str = "USD", db: Session = Depends(get_d
 
 
 @app.delete("/api/transactions/{transaction_id}")
-def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
+def delete_transaction(
+    transaction_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
     """Delete a transaction"""
-    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    transaction = (
+        db.query(Transaction)
+        .filter(Transaction.id == transaction_id, Transaction.user_id == user.id)
+        .first()
+    )
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
     db.delete(transaction)
     db.query(Analysis).filter(
-        Analysis.month == transaction.date.month, Analysis.year == transaction.date.year
+        Analysis.user_id == user.id,
+        Analysis.month == transaction.date.month,
+        Analysis.year == transaction.date.year,
     ).delete()
     db.commit()
 
@@ -417,18 +576,33 @@ def delete_transaction(transaction_id: int, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/statements/{statement_id}")
-def delete_statement(statement_id: int, db: Session = Depends(get_db)):
+def delete_statement(
+    statement_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
+):
     """Delete a statement and all its transactions"""
-    statement = db.query(Statement).filter(Statement.id == statement_id).first()
+    statement = (
+        db.query(Statement)
+        .filter(Statement.id == statement_id, Statement.user_id == user.id)
+        .first()
+    )
     if not statement:
         raise HTTPException(status_code=404, detail="Statement not found")
 
     # Delete associated transactions (cascade should handle this, but explicit is better)
     deleted_count = (
-        db.query(Transaction).filter(Transaction.statement_id == statement_id).delete()
+        db.query(Transaction)
+        .filter(
+            Transaction.statement_id == statement_id,
+            Transaction.user_id == user.id,
+        )
+        .delete()
     )
     db.query(Analysis).filter(
-        Analysis.month == statement.month, Analysis.year == statement.year
+        Analysis.user_id == user.id,
+        Analysis.month == statement.month,
+        Analysis.year == statement.year,
     ).delete()
     db.delete(statement)
     db.commit()
@@ -440,18 +614,28 @@ def delete_statement(statement_id: int, db: Session = Depends(get_db)):
 
 
 @app.delete("/api/data/clear-all")
-def clear_all_data(db: Session = Depends(get_db)):
+def clear_all_data(db: Session = Depends(get_db), user: User = Depends(current_user)):
     """Delete all data from the database"""
     try:
         # Delete all transactions
-        deleted_transactions = db.query(Transaction).delete()
+        deleted_transactions = (
+            db.query(Transaction).filter(Transaction.user_id == user.id).delete()
+        )
 
         # Delete all statements
-        deleted_statements = db.query(Statement).delete()
+        deleted_statements = (
+            db.query(Statement).filter(Statement.user_id == user.id).delete()
+        )
 
         # Delete all analyses
-        deleted_analyses = db.query(Analysis).delete()
-        deleted_learning_rules = db.query(CategoryLearning).delete()
+        deleted_analyses = (
+            db.query(Analysis).filter(Analysis.user_id == user.id).delete()
+        )
+        deleted_learning_rules = (
+            db.query(CategoryLearning)
+            .filter(CategoryLearning.user_id == user.id)
+            .delete()
+        )
 
         db.commit()
 
@@ -472,11 +656,13 @@ def get_statements(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """Get all uploaded statements"""
     statements = (
         db.query(Statement, func.count(Transaction.id))
         .outerjoin(Transaction, Transaction.statement_id == Statement.id)
+        .filter(Statement.user_id == user.id)
         .group_by(Statement.id)
         .order_by(Statement.upload_date.desc())
         .offset(offset)
@@ -504,7 +690,7 @@ def get_statements(
 
 
 @app.get("/api/currency/rates")
-def get_currency_rates():
+def get_currency_rates(_user: User = Depends(current_user)):
     """Get current exchange rates"""
     rates = currency_converter.get_rates()
     return {
@@ -516,7 +702,10 @@ def get_currency_rates():
 
 @app.get("/api/currency/convert")
 def convert_currency(
-    amount: float, from_currency: str = "USD", to_currency: str = "USD"
+    amount: float,
+    from_currency: str = "USD",
+    to_currency: str = "USD",
+    _user: User = Depends(current_user),
 ):
     """Convert amount from one currency to another"""
     try:
@@ -541,9 +730,10 @@ def get_transactions(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """Get transactions with optional filters and currency conversion"""
-    query = db.query(Transaction)
+    query = db.query(Transaction).filter(Transaction.user_id == user.id)
 
     if month:
         query = query.filter(extract("month", Transaction.date) == month)
@@ -592,6 +782,7 @@ def update_transaction(
     transaction_type: Optional[Literal["credit", "debit", "refund", "transfer"]] = None,
     apply_to_all_matching: bool = False,
     db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """
     Update a transaction's category and learn from it.
@@ -599,7 +790,11 @@ def update_transaction(
     If apply_to_all_matching is True, also updates all other
     transactions from the same vendor with the new category.
     """
-    transaction = db.query(Transaction).filter(Transaction.id == transaction_id).first()
+    transaction = (
+        db.query(Transaction)
+        .filter(Transaction.id == transaction_id, Transaction.user_id == user.id)
+        .first()
+    )
     if not transaction:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
@@ -621,7 +816,9 @@ def update_transaction(
         )
 
     db.query(Analysis).filter(
-        Analysis.month == transaction.date.month, Analysis.year == transaction.date.year
+        Analysis.user_id == user.id,
+        Analysis.month == transaction.date.month,
+        Analysis.year == transaction.date.year,
     ).delete()
     db.commit()
     db.refresh(transaction)
@@ -640,8 +837,10 @@ def update_transaction(
 
 @app.get("/api/category-learning")
 def get_category_learning(
-    limit: int = Query(default=200, ge=1, le=1000), db: Session = Depends(get_db)
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    user: User = Depends(current_user),
 ):
     """Get all learned category patterns"""
-    rules = category_learner.get_learning_rules(db, limit)
+    rules = category_learner.get_learning_rules(db, user.id, limit)
     return {"rules": rules}

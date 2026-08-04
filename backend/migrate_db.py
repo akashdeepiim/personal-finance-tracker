@@ -14,16 +14,22 @@ def migrate_database() -> None:
     Base.metadata.create_all(bind=engine)
     statements = {
         "transactions": {
+            "user_id": "INTEGER",
             "original_amount": "NUMERIC(18, 2) NOT NULL DEFAULT 0",
             "currency": "VARCHAR NOT NULL DEFAULT 'USD'",
             "subcategory": "VARCHAR",
             "transaction_type": "VARCHAR NOT NULL DEFAULT 'debit'",
         },
         "statements": {
+            "user_id": "INTEGER",
             "currency": "VARCHAR NOT NULL DEFAULT 'USD'",
             "file_hash": "VARCHAR(64)",
         },
-        "analyses": {"total_income": "NUMERIC(18, 2) NOT NULL DEFAULT 0"},
+        "analyses": {
+            "user_id": "INTEGER",
+            "total_income": "NUMERIC(18, 2) NOT NULL DEFAULT 0",
+        },
+        "category_learning": {"user_id": "INTEGER"},
     }
 
     with engine.begin() as connection:
@@ -38,6 +44,16 @@ def migrate_database() -> None:
                         text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {definition}')
                     )
         if engine.dialect.name == "postgresql":
+            connection.execute(
+                text(
+                    "ALTER TABLE statements DROP CONSTRAINT IF EXISTS uq_statement_account_hash"
+                )
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE analyses DROP CONSTRAINT IF EXISTS uq_analysis_year_month"
+                )
+            )
             for table, column in (
                 ("transactions", "amount"),
                 ("transactions", "original_amount"),
@@ -56,22 +72,36 @@ def migrate_database() -> None:
                 "WHERE original_amount IS NULL OR original_amount = 0"
             )
         )
+        connection.execute(text("DROP INDEX IF EXISTS uq_analysis_year_month"))
+        connection.execute(text("DROP INDEX IF EXISTS uq_statement_account_hash"))
         connection.execute(
             text(
-                "DELETE FROM analyses WHERE id NOT IN "
-                "(SELECT MAX(id) FROM analyses GROUP BY year, month)"
+                "CREATE INDEX IF NOT EXISTS ix_transactions_user_id ON transactions (user_id)"
             )
         )
         connection.execute(
             text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_analysis_year_month "
-                "ON analyses (year, month)"
+                "CREATE INDEX IF NOT EXISTS ix_statements_user_id ON statements (user_id)"
+            )
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS ix_analyses_user_id ON analyses (user_id)")
+        )
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_category_learning_user_id ON category_learning (user_id)"
             )
         )
         connection.execute(
             text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_statement_account_hash "
-                "ON statements (account_type, file_hash)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_analysis_year_month "
+                "ON analyses (user_id, year, month)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_user_statement_account_hash "
+                "ON statements (user_id, account_type, file_hash)"
             )
         )
 
