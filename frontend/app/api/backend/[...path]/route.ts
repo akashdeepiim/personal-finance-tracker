@@ -4,6 +4,8 @@ import { backendTarget } from '@/lib/backend-url'
 
 const API_TOKEN = process.env.FINANCE_API_TOKEN
 
+export const maxDuration = 300
+
 async function proxy(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
   const { path } = await context.params
   try {

@@ -1,9 +1,9 @@
 import re
 import csv
+import os
 import threading
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
-import pandas as pd
 from pypdf import PdfReader
 import io
 
@@ -72,6 +72,8 @@ class StatementParser:
 
     def _parse_csv(self, content: bytes, account_type: str) -> List[Dict]:
         """Parse CSV statement"""
+        import pandas as pd
+
         text = self._decode_statement_text(content)
         delimiter, header_index = self._discover_csv_layout(text)
         if header_index is None:
@@ -490,6 +492,8 @@ class StatementParser:
         return None
 
     def _parse_date_value(self, value, day_first: Optional[bool] = None) -> datetime:
+        import pandas as pd
+
         text = self._clean_cell(value)
         if not text:
             raise ValueError("Missing transaction date")
@@ -548,9 +552,12 @@ class StatementParser:
     ) -> List[Dict]:
         """OCR image-only PDFs and preserve table coordinates for safe parsing."""
         try:
+            os.environ.setdefault("OMP_NUM_THREADS", "1")
+            os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
             import numpy as np
             import pypdfium2 as pdfium
             from rapidocr import RapidOCR
+            from rapidocr.utils.typings import LangDet, LangRec, ModelType, OCRVersion
         except ImportError as exc:
             raise ValueError(
                 "This PDF contains no searchable text and OCR support is unavailable"
@@ -563,10 +570,29 @@ class StatementParser:
         pages = []
         with self._ocr_lock:
             if self._ocr_engine is None:
-                self._ocr_engine = RapidOCR()
+                self._ocr_engine = RapidOCR(
+                    params={
+                        "Global.use_cls": False,
+                        "Global.log_level": "warning",
+                        "EngineConfig.onnxruntime.intra_op_num_threads": 1,
+                        "EngineConfig.onnxruntime.inter_op_num_threads": 1,
+                        "Det.lang_type": LangDet.CH,
+                        "Det.model_type": ModelType.TINY,
+                        "Det.ocr_version": OCRVersion.PPOCRV6,
+                        "Det.limit_type": "max",
+                        "Det.limit_side_len": 256,
+                        "Rec.lang_type": LangRec.CH,
+                        "Rec.model_type": ModelType.TINY,
+                        "Rec.ocr_version": OCRVersion.PPOCRV6,
+                        "Rec.rec_batch_num": 1,
+                    }
+                )
+                # RapidOCR initializes this session even when classification is off.
+                # Scanned statements are already upright, so release its memory.
+                del self._ocr_engine.text_cls
             for page_number in range(len(document)):
                 page = document[page_number]
-                bitmap = page.render(scale=120 / 72)
+                bitmap = page.render(scale=100 / 72)
                 image = np.asarray(bitmap.to_pil().convert("RGB"))
                 result = self._ocr_engine(image)
                 lines = []
